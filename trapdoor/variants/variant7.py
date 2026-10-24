@@ -19,7 +19,7 @@
         (P0^(M e))^d2 ≡ (P0^(M N))^d1   (mod p)
 """
 import math, random, time, argparse
-from ctflib import is_prime, primes_upto, batch_poly_gcd
+from trapdoor.ctflib import is_prime, primes_upto, batch_poly_gcd
 
 # ------------------------------------------------- 三次 Pell 群 (签名已修正)
 def cubic_pell_mul(P, Q, a, n):

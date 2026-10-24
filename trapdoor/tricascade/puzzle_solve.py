@@ -5,9 +5,9 @@ puzzle_solve.py — 三层级联 puzzle 的参考解题器
 每层: 分解 N -> 得 phi -> RSA 解密 -> 用明文解封下一层。
 """
 import json, hashlib, time, sys
-from ctflib import is_prime
-import variant6, variant7, variant9
-from puzzle_gen import keystream
+from trapdoor.ctflib import is_prime
+from trapdoor.variants import variant6, variant7, variant9
+from trapdoor.tricascade.puzzle_gen import keystream
 
 
 def unmask(hexblob, seed_int):
@@ -22,7 +22,8 @@ def rsa_dec(c, e, p, q):
 
 
 def main():
-    ch = json.load(open("challenge.json"))
+    path = sys.argv[1] if len(sys.argv) > 1 else "challenges/tri-cascade/challenge.json"
+    ch = json.load(open(path))
     T0 = time.time()
 
     # ---------------- Layer A : 变种 6

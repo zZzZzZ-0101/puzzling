@@ -14,7 +14,7 @@
   且必须先推导出碰撞式是可分离的 (LHS 只含 d1, RHS 只含 d2) 才能降到 2*2^22 步。
 """
 import math, random, time, argparse
-from ctflib import is_prime, ec_add, ec_mul, batch_poly_gcd, FactorFound
+from trapdoor.ctflib import is_prime, ec_add, ec_mul, batch_poly_gcd, FactorFound
 
 # ------------------------------------------------------------------ KeyGen
 def generate(K_bound=1 << 15, seed=None, verbose=True):

@@ -26,8 +26,8 @@
 (a) p,q 共享隐藏基 M=3^186+d1, (b) 残数小到不回绕, (c) 已知低位 Coppersmith。
 """
 import math, random, time, argparse
-from ctflib import is_prime
-from variant5 import coppersmith_unknown_divisor
+from trapdoor.ctflib import is_prime
+from trapdoor.variants.variant5 import coppersmith_unknown_divisor
 
 R_BASE = 3 ** 186          # 295 bit, 非 2 幂次基
 

@@ -1,0 +1,8 @@
+{
+  "name": "Cryptographic Trapdoor Arsenal V3.0",
+  "description": "High-difficulty algebraic trapdoor locks and composable multi-layer challenge engine designed to defeat frontier LLM heuristic solvers.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
