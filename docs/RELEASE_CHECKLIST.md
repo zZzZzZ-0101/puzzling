@@ -5,7 +5,7 @@ Work through this list every time a challenge is published. Steps marked
 
 ## Build
 
-1. Pick a tier (`ctf` or `hard`; see `trapdoor/v4.py` and `docs/benchmarks.md`).
+1. Use the `ctf` tier, the chosen release target and the default (`hard` exists for experiments; see `trapdoor/v4.py` and `docs/benchmarks.md`).
 2. Build with a fresh random seed. Don't pass `--seed`, and never reuse a seed
    that appears anywhere in this repository:
    ```bash

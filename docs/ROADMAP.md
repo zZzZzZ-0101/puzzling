@@ -99,11 +99,12 @@ the only lock whose cost scales close to linearly with K.
 
 ## What is left
 
-1. **Decide the target difficulty** (ctf vs hard, or new bounds). Compute is
-   not the barrier at these sizes, so the choice is mostly about how many
-   insight steps to stack and how much brute force to add on top.
-2. **Stage 4: blind playtest.** Give a freshly built `challenge.json`, and
-   nothing else, to solvers, and record time per layer and where they stall.
+1. **Target difficulty: decided, ctf tier.** The release candidate is
+   `python3 -m trapdoor.v4 build --tier ctf` (the default). The hard tier stays
+   available, but it is not the release target.
+2. **Stage 4: blind playtest of a ctf-tier build.** Give a freshly built
+   `challenge.json`, and nothing else, to solvers, and record time per layer
+   and where they stall. Adjust the ctf bounds from what the playtest shows.
 3. **lock05 / lock06 speed.** These two solvers spend their time in
    pure-Python group arithmetic that neither backend touches. A vectorised or
    C implementation would let them run at larger K.

@@ -31,6 +31,7 @@ import time
 
 from trapdoor.arsenal.cascade_engine import CASCADE_FORMAT, build_cascade, solve_cascade
 
+# The ctf tier is the release target; hard is kept for experiments.
 # Generator kwargs per layer. Solver params are the same search bounds (see
 # sk["params"]), so a tier alone is enough to re-run the reference solver.
 TIERS = {
