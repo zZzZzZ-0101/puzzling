@@ -1,6 +1,9 @@
 """
 puzzle_gen.py — 三层级联陷门 puzzle 生成器
 
+[Legacy] V2.1 格式 (XOR keystream 封装), 仅为复现已发布的 challenges/tri-cascade 而保留。
+新题请用 trapdoor/v4.py (HMAC 信封, 统一 LOCK_REGISTRY)。
+
 结构 (真级联, 非 XOR 胶水):
     Layer A  变种 6  隐藏共享基 M = 3^186 + d1, 残数不回绕
              -> 解出 p_A -> phi(N_A) -> RSA 解密 c_A -> seed_B

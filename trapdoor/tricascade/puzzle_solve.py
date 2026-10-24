@@ -1,6 +1,9 @@
 """
 puzzle_solve.py — 三层级联 puzzle 的参考解题器
 
+[Legacy] V2.1 格式 (XOR keystream 封装), 仅为复现已发布的 challenges/tri-cascade 而保留。
+新题请用 trapdoor/v4.py (HMAC 信封, 统一 LOCK_REGISTRY)。
+
 只读 challenge.json (公开卷面), 不碰 solution.json。
 每层: 分解 N -> 得 phi -> RSA 解密 -> 用明文解封下一层。
 """
