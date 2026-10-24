@@ -166,7 +166,8 @@ def check_instance(lid, pub, sk, solve_fn, decoy):
     assert 1 < e < N, f"{lid}: exponent e out of range (1, N)"
     assert math.gcd(e, (p - 1) * (q - 1)) == 1, f"{lid}: e not coprime to phi(N)"
     if e > 65537:
-        assert e.bit_length() >= N.bit_length() - 2, f"{lid}: e is {e.bit_length()} bits, conspicuously short"
+        # A uniform e mod N is a few bits short often enough; 8+ bits short (lock03 used to be 10) is a tell.
+        assert e.bit_length() >= N.bit_length() - 8, f"{lid}: e is {e.bit_length()} bits, conspicuously short"
 
     # 2. Statistical Monobit Entropy check
     ok_ent, ratio = check_monobit_entropy(N)
