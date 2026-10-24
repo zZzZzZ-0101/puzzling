@@ -541,7 +541,7 @@ class TrapdoorServerHandler(http.server.BaseHTTPRequestHandler):
             try:
                 flag = f"FLAG{{Interactive_{lock_id}_Verified}}".encode("utf-8")
                 gen = generate_single_lock(lock_id, flag_bytes=flag, seed=int(time.time()), verbose=False)
-                sol = solve_single_lock(lock_id, gen["pub"], verbose=False)
+                sol = solve_single_lock(lock_id, gen["pub"], verbose=False, **gen["params"])
                 res = {
                     "status": "ok",
                     "lock_id": lock_id,

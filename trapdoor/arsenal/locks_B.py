@@ -10,7 +10,7 @@ from trapdoor.ctflib import (
     is_prime, primes_upto, sqrt_mod, inv_mod_n, FactorFound,
     batch_poly_gcd, lll
 )
-from trapdoor.arsenal.locks_A import _crt_combine, _poly_extgcd_inv, _poly_divmod_small, _poly_trim
+from trapdoor.arsenal.locks_A import _crt_combine, _lift_exponent, _poly_extgcd_inv, _poly_divmod_small, _poly_trim
 
 
 # ======================================================================
@@ -107,7 +107,7 @@ def _q12_pow(Q, k, c_twist, n):
     return res
 
 
-def lock06_generate(K_bound=1 << 11, B=1 << 13, n_small=34, seed=None, verbose=True):
+def lock06_generate(K_bound=1 << 11, B=1 << 13, n_small=34, seed=None, verbose=True, decoy=False):
     if seed is not None:
         random.seed(seed)
     t0 = time.time()
@@ -152,7 +152,7 @@ def lock06_generate(K_bound=1 << 11, B=1 << 13, n_small=34, seed=None, verbose=T
     N = p * q
     phi_N = (p - 1) * (q - 1)
 
-    mask120 = 1 << 120
+    mask120 = 1 << 120 if decoy else 1
     while True:
         d1 = random.randrange(3, K_bound)
         if not is_prime(d1):
@@ -167,13 +167,7 @@ def lock06_generate(K_bound=1 << 11, B=1 << 13, n_small=34, seed=None, verbose=T
         e_c6 = (4 * d1 + 2 * d2) * N % C6 * pow(denom, -1, C6) % C6
         # Plant Fake 120-Bit LSB Partial-Key Exposure Disguise: e == N (mod 2^120)
         e_r, step_e = _crt_combine([e_c6, N % mask120], [C6, mask120])
-        m_hi = (N - 1 - e_r) // step_e
-        e = None
-        for m in range(m_hi, max(1, m_hi - 500), -1):
-            cand_e = e_r + m * step_e
-            if 1 < cand_e < N and math.gcd(cand_e, phi_N) == 1:
-                e = cand_e
-                break
+        e = _lift_exponent(e_r, step_e, N, phi_N)
         if e is not None:
             break
 
@@ -184,16 +178,16 @@ def lock06_generate(K_bound=1 << 11, B=1 << 13, n_small=34, seed=None, verbose=T
         print("  [Lock 06 KeyGen] %.2fs | p=%db q=%db N=%db | e=%db (120b LSB match decoy) | d1=%d d2=%d" %
               (time.time() - t0, p.bit_length(), q.bit_length(), N.bit_length(),
                e.bit_length(), d1, d2))
-    pub = {"N": N, "e": e, "K_bound": K_bound, "B": B}
+    pub = {"N": N, "e": e}
     sk = {"p": p, "q": q, "d1": d1, "d2": d2, "Phi6": Phi6, "C6": C6}
+    # Search bounds are solver knowledge, not part of the public surface.
+    sk["params"] = {"K_bound": K_bound, "B": B}
     return pub, sk
 
 
-def lock06_solve(pub, verbose=True):
+def lock06_solve(pub, verbose=True, K_bound=1 << 11, B=1 << 13):
     N = int(pub["N"])
     e = int(pub["e"])
-    K_bound = int(pub.get("K_bound", 1 << 11))
-    B = int(pub.get("B", 1 << 13))
     t0 = time.time()
     c_twist = 2
     M = math.prod([l for l in primes_upto(B) if l % 6 == 1])
@@ -332,8 +326,9 @@ def lock07_generate(K_bound=1 << 11, seed=None, verbose=True):
         if denom == 0:
             continue
         # Twisted Bilinear Matrix Entanglement: d2*(e + 2N) == d1*(3e + 5N) (mod M_3)
-        e = (5 * d1 - 2 * d2) * N % M_3 * pow(denom, -1, M_3) % M_3
-        if 1 < e < N and math.gcd(e, (p - 1) * (q - 1)) == 1:
+        e_r = (5 * d1 - 2 * d2) * N % M_3 * pow(denom, -1, M_3) % M_3
+        e = _lift_exponent(e_r, M_3, N, (p - 1) * (q - 1))
+        if e is not None:
             break
 
     assert N.bit_length() == 1024 and 1 < e < N
@@ -341,15 +336,16 @@ def lock07_generate(K_bound=1 << 11, seed=None, verbose=True):
     if verbose:
         print("  [Lock 07 KeyGen] %.2fs | p=%db q=%db N=%db | M_3=%db PRIME (0%% smooth) | d1=%d d2=%d" %
               (time.time() - t0, p.bit_length(), q.bit_length(), N.bit_length(), M_3.bit_length(), d1, d2))
-    pub = {"N": N, "e": e, "K_bound": K_bound}
+    pub = {"N": N, "e": e}
     sk = {"p": p, "q": q, "M_3": M_3, "d1": d1, "d2": d2}
+    # Search bounds are solver knowledge, not part of the public surface.
+    sk["params"] = {"K_bound": K_bound}
     return pub, sk
 
 
-def lock07_solve(pub, verbose=True):
+def lock07_solve(pub, verbose=True, K_bound=1 << 11):
     N = int(pub["N"])
     e = int(pub["e"])
-    K_bound = int(pub.get("K_bound", 1 << 11))
     t0 = time.time()
 
     for trial in range(1, 6):
@@ -585,16 +581,16 @@ def lock08_generate(mask_bits=4, x0_bits=106, seed=None, verbose=True):
         print("  [Lock 08 KeyGen] %.2fs | p=%db q=%db N=%db | u_i~%db x0=%db delta=%d" %
               (time.time() - t0, p.bit_length(), q.bit_length(), N.bit_length(),
                u3.bit_length(), x0.bit_length(), delta_secret))
-    pub = {"N": N, "e": e, "mask_bits": mask_bits, "x0_bits": x0_bits}
+    pub = {"N": N, "e": e}
     sk = {"p": p, "q": q, "u0": u0, "u1": u1, "u2": u2, "u3": u3, "delta": delta_secret, "x0": x0}
+    # Search bounds are solver knowledge, not part of the public surface.
+    sk["params"] = {"mask_bits": mask_bits, "x0_bits": x0_bits}
     return pub, sk
 
 
-def lock08_solve(pub, verbose=True):
+def lock08_solve(pub, verbose=True, mask_bits=4, x0_bits=106):
     N = int(pub["N"])
     e = int(pub["e"])
-    mask_bits = int(pub.get("mask_bits", 4))
-    x0_bits = int(pub.get("x0_bits", 106))
     t0 = time.time()
 
     e2 = e * e % N
@@ -699,14 +695,15 @@ def lock09_generate(K_bound=1 << 11, seed=None, verbose=True):
     if verbose:
         print("  [Lock 09 KeyGen] %.2fs | p=%db q=%db N=%db | Fake Fermat 20b Halo | d1=%d d2=%d" %
               (time.time() - t0, p.bit_length(), q.bit_length(), N.bit_length(), d1, d2))
-    pub = {"N": N, "e": 65537, "K_bound": K_bound}
+    pub = {"N": N, "e": 65537}
     sk = {"p": p, "q": q, "d1": d1, "d2": d2, "H1": H1, "H2": H2}
+    # Search bounds are solver knowledge, not part of the public surface.
+    sk["params"] = {"K_bound": K_bound}
     return pub, sk
 
 
-def lock09_solve(pub, verbose=True):
+def lock09_solve(pub, verbose=True, K_bound=1 << 11):
     N = int(pub["N"])
-    K_bound = int(pub.get("K_bound", 1 << 11))
     t0 = time.time()
 
     v_table = _lucas_v_seq(G_CHEB, 2 * K_bound, M_CHEB)
@@ -837,8 +834,9 @@ def lock10_generate(K_bound=1 << 11, B=1 << 13, n_small=25, seed=None, verbose=T
         if math.gcd(denom, C12) != 1:
             continue
         # Dodecic Galois-Twisted Entanglement: d2*(e + 4N) == d1*(5e + 9N) (mod C12)
-        e = (9 * d1 - 4 * d2) * N % C12 * pow(denom, -1, C12) % C12
-        if 1 < e < N and math.gcd(e, phi_N) == 1:
+        e_r = (9 * d1 - 4 * d2) * N % C12 * pow(denom, -1, C12) % C12
+        e = _lift_exponent(e_r, C12, N, phi_N)
+        if e is not None:
             break
 
     assert N.bit_length() == 1024 and 1 < e < N
@@ -847,16 +845,16 @@ def lock10_generate(K_bound=1 << 11, B=1 << 13, n_small=25, seed=None, verbose=T
         print("  [Lock 10 KeyGen] %.2fs | p=%db q=%db N=%db | e=%db (<N) | d1=%d d2=%d" %
               (time.time() - t0, p.bit_length(), q.bit_length(), N.bit_length(),
                e.bit_length(), d1, d2))
-    pub = {"N": N, "e": e, "K_bound": K_bound, "B": B}
+    pub = {"N": N, "e": e}
     sk = {"p": p, "q": q, "d1": d1, "d2": d2, "Phi12": Phi12, "C12": C12}
+    # Search bounds are solver knowledge, not part of the public surface.
+    sk["params"] = {"K_bound": K_bound, "B": B}
     return pub, sk
 
 
-def lock10_solve(pub, verbose=True):
+def lock10_solve(pub, verbose=True, K_bound=1 << 11, B=1 << 13):
     N = int(pub["N"])
     e = int(pub["e"])
-    K_bound = int(pub.get("K_bound", 1 << 11))
-    B = int(pub.get("B", 1 << 13))
     t0 = time.time()
 
     M = math.prod([l for l in primes_upto(B) if l % 12 == 1])

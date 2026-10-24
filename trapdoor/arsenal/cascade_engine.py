@@ -6,13 +6,14 @@ Provides:
 1. LOCK_REGISTRY: A unified registry of all 10 separated mathematical trapdoor locks (Locks 01-10).
    Each lock can be run standalone (`generate_single_lock` / `solve_single_lock`) or composed into
    an arbitrary multi-layer Matryoshka cascade (`build_cascade` / `solve_cascade`).
-2. Zero-Leakage Key Derivation Envelope:
-   Every layer exposes ONLY standard RSA parameters `(N, e, c)`.
-   The secret key `K_{i}` of layer `i` is derived deterministically from the recovered unsorted
-   prime set `{p_i, q_i}` of layer `i`:
-       p_lo, p_hi = min(p_i, q_i), max(p_i, q_i)
-       K_{i} = SHA256("CASCADE_V3_KEY|" || layer_id || "|" || str(p_lo) || "|" || str(p_hi))
-   and decrypts the next inner layer's payload via authenticated SHA256-CTR stream cipher + HMAC-SHA256.
+   The V2.1 variants 5/6/7/9 are registered too (see variant_locks.py), so there is one engine.
+2. Public / private split:
+   build_cascade returns {"public": ..., "private": ...}. The public part holds, per layer, only
+   (N, e, c) and the encrypted next layer. Lock names, search bounds and factors live in the
+   private manifest, which the reference solver reads as hints and which is never published.
+3. Key derivation: the envelope key of layer i depends only on its depth and its primes:
+       K_i = SHA256("CASCADE_V4_KEY|" || i || "|" || min(p,q) || "|" || max(p,q))
+   and decrypts the next layer via SHA256-CTR + HMAC-SHA256.
 """
 
 import hashlib
@@ -34,6 +35,12 @@ from trapdoor.arsenal.locks_B import (
     lock08_generate, lock08_solve,
     lock09_generate, lock09_solve,
     lock10_generate, lock10_solve,
+)
+from trapdoor.arsenal.variant_locks import (
+    v5_generate, v5_solve,
+    v6_generate, v6_solve,
+    v7_generate, v7_solve,
+    v9_generate, v9_solve,
 )
 
 
@@ -128,12 +135,51 @@ LOCK_REGISTRY: Dict[str, Dict[str, Any]] = {
         "generate": lock10_generate,
         "solve": lock10_solve,
     },
+    "variant5": {
+        "id": "variant5",
+        "name": "V2.1 Variant 5: Two-Stage Orthogonal Lattice + Shifted-Mask Coppersmith (needs fpylll)",
+        "surface": "(N, e, c)",
+        "algebraic_group": "3D orthogonal lattice on e, then 20-dim unknown-divisor Coppersmith",
+        "trapdoor_type": "u0 e^2 + u1 e + u2 = 0 (mod N); rotated quadratic has a 104-bit root mod p",
+        "generate": v5_generate,
+        "solve": v5_solve,
+    },
+    "variant6": {
+        "id": "variant6",
+        "name": "V2.1 Variant 6: Hidden Shared Base 3^186 + d1 with No-Wrap Residue",
+        "surface": "(N, e=65537, c)",
+        "algebraic_group": "Z / M Z with M = 3^186 + d1 (d1 has 16 bits of entropy)",
+        "trapdoor_type": "N mod M = L * d2 without wraparound, then known-low-bits Coppersmith",
+        "generate": v6_generate,
+        "solve": v6_solve,
+    },
+    "variant7": {
+        "id": "variant7",
+        "name": "V2.1 Variant 7: Cubic Pell Norm-1 Torus Phi_3(p), Dual-Track Collision",
+        "surface": "(N, e, c)",
+        "algebraic_group": "Norm-1 torus of F_{p^3}, order p^2 + p + 1 (cubic non-residue a withheld)",
+        "trapdoor_type": "d2 * (M e) = d1 * (M N) (mod Phi_3(p))",
+        "generate": v7_generate,
+        "solve": v7_solve,
+    },
+    "variant9": {
+        "id": "variant9",
+        "name": "V2.1 Variant 9: Prime-Order D=3 CM Curve, Self-Referential Collision",
+        "surface": "(N, e=65537, c)",
+        "algebraic_group": "E_b(F_p) with #E = M_p a 512-bit prime (0% smoothness)",
+        "trapdoor_type": "d2 * N = d1 (mod M_p) => [d2][N]P = [d1]P (mod p)",
+        "generate": v9_generate,
+        "solve": v9_solve,
+    },
 }
 
 
-def _derive_cascade_key(layer_id: str, p: int, q: int) -> bytes:
+CASCADE_FORMAT = "trapdoor-cascade/4"
+
+
+def _derive_cascade_key(depth: int, p: int, q: int) -> bytes:
     p_lo, p_hi = (p, q) if p < q else (q, p)
-    material = f"CASCADE_V3_KEY|{layer_id}|{p_lo}|{p_hi}".encode("utf-8")
+    material = f"CASCADE_V4_KEY|{depth}|{p_lo}|{p_hi}".encode("utf-8")
     return hashlib.sha256(material).digest()
 
 
@@ -153,7 +199,7 @@ def _stream_xor(key: bytes, nonce: bytes, data: bytes) -> bytes:
 
 def _encrypt_envelope(key: bytes, plaintext_dict: Dict[str, Any]) -> Dict[str, str]:
     raw = json.dumps(plaintext_dict, sort_keys=True).encode("utf-8")
-    nonce = hashlib.sha256(key + b"NONCE_V3" + raw[:32]).digest()[:16]
+    nonce = hashlib.sha256(key + b"NONCE_V4" + raw[:32]).digest()[:16]
     ct = _stream_xor(key, nonce, raw)
     tag = hmac.new(key, nonce + ct, hashlib.sha256).hexdigest()
     return {
@@ -178,12 +224,17 @@ def generate_single_lock(
     flag_bytes: bytes = b"FLAG{single_lock_test}",
     seed: Optional[int] = None,
     verbose: bool = False,
+    **gen_params: Any,
 ) -> Dict[str, Any]:
+    """Generate one lock. `gen_params` go to the generator (e.g. K_bound, decoy).
+
+    Returns {"pub": {N, e, c}, "priv": sk, "params": solver params, ...}.
+    """
     if lock_id not in LOCK_REGISTRY:
         raise KeyError(f"Unknown lock_id '{lock_id}'. Available: {sorted(LOCK_REGISTRY.keys())}")
     entry = LOCK_REGISTRY[lock_id]
     t0 = time.time()
-    pub, sk = entry["generate"](seed=seed, verbose=verbose)
+    pub, sk = entry["generate"](seed=seed, verbose=verbose, **gen_params)
     gen_time = time.time() - t0
 
     N = int(pub["N"])
@@ -193,12 +244,11 @@ def generate_single_lock(
         raise ValueError("Plaintext flag_bytes integer exceeds modulus N.")
     c = pow(m_int, e, N)
 
-    pub_with_c = dict(pub)
-    pub_with_c["c"] = c
     return {
         "lock_id": lock_id,
-        "pub": pub_with_c,
+        "pub": {"N": N, "e": e, "c": c},
         "priv": sk,
+        "params": dict(sk.get("params", {})),
         "gen_time_sec": round(gen_time, 4),
     }
 
@@ -207,18 +257,26 @@ def solve_single_lock(
     lock_id: str,
     pub: Dict[str, int],
     verbose: bool = False,
+    **params: Any,
 ) -> Dict[str, Any]:
+    """Factor N with the named lock's solver and decrypt c.
+
+    `params` are the solver's search bounds (the `params` returned by
+    generate_single_lock); they are not read from `pub`.
+    """
     if lock_id not in LOCK_REGISTRY:
         raise KeyError(f"Unknown lock_id '{lock_id}'. Available: {sorted(LOCK_REGISTRY.keys())}")
     entry = LOCK_REGISTRY[lock_id]
+    N = int(pub["N"])
+    e = int(pub["e"])
     t0 = time.time()
-    res = entry["solve"](pub, verbose=verbose)
+    res = entry["solve"]({"N": N, "e": e}, verbose=verbose, **params)
     solve_time = time.time() - t0
     if res is None:
         raise RuntimeError(f"Solver for {lock_id} failed to factor N.")
     p, q = int(res[0]), int(res[1])
-    N = int(pub["N"])
-    e = int(pub["e"])
+    if p * q != N:
+        raise RuntimeError(f"Solver for {lock_id} returned a wrong factorisation.")
     c = int(pub.get("c", 0))
     phi = (p - 1) * (q - 1)
     d = pow(e, -1, phi)
@@ -234,13 +292,23 @@ def solve_single_lock(
     }
 
 
+def _public_layer(pub: Dict[str, int], next_envelope: Optional[Dict[str, str]]) -> Dict[str, Any]:
+    return {"N": str(pub["N"]), "e": str(pub["e"]), "c": str(pub["c"]), "next": next_envelope}
+
+
 def build_cascade(
     lock_sequence: List[str],
     final_flag: bytes = b"FLAG{Matryoshka_10_Locks_Arsenal_Mastered}",
     base_seed: int = 20260501,
     seed: Optional[int] = None,
     verbose: bool = False,
+    layer_params: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
+    """Build a cascade; layer 0 is the outermost (the one a solver starts with).
+
+    `layer_params[i]` are generator kwargs for layer i (e.g. {"K_bound": 1 << 13}).
+    Returns {"public": <publishable>, "private": <author manifest>}.
+    """
     if seed is not None:
         base_seed = seed
     if not lock_sequence:
@@ -248,102 +316,93 @@ def build_cascade(
     for lid in lock_sequence:
         if lid not in LOCK_REGISTRY:
             raise KeyError(f"Unknown lock_id '{lid}' in sequence.")
+    layer_params = layer_params or [{} for _ in lock_sequence]
+    if len(layer_params) != len(lock_sequence):
+        raise ValueError("layer_params must have one entry per layer.")
 
-    layers_raw: List[Dict[str, Any]] = []
     total_layers = len(lock_sequence)
-
+    layers = []
     for idx, lid in enumerate(lock_sequence):
         is_last = (idx == total_layers - 1)
-        layer_flag = (
-            final_flag
-            if is_last
-            else f"STEP_{idx + 1}_OF_{total_layers}_UNLOCKED[{lid}]".encode("utf-8")
-        )
+        layer_msg = final_flag if is_last else f"LAYER {idx + 1}/{total_layers} OPEN".encode("utf-8")
         layer_seed = base_seed + idx * 1009
-        gen_data = generate_single_lock(lid, flag_bytes=layer_flag, seed=layer_seed, verbose=verbose)
-        layers_raw.append({
-            "layer_index": idx,
-            "lock_id": lid,
-            "pub": gen_data["pub"],
-            "priv": gen_data["priv"],
-            "gen_time_sec": gen_data["gen_time_sec"],
-        })
+        gen = generate_single_lock(lid, flag_bytes=layer_msg, seed=layer_seed, verbose=verbose,
+                                   **layer_params[idx])
+        gen["seed"] = layer_seed
+        layers.append(gen)
 
-    current_payload: Dict[str, Any] = {
-        "layer_index": total_layers - 1,
-        "lock_id": layers_raw[-1]["lock_id"],
-        "pub": layers_raw[-1]["pub"],
-        "next_envelope": None,
-    }
-
+    payload = _public_layer(layers[-1]["pub"], None)
     for idx in range(total_layers - 2, -1, -1):
-        outer_layer = layers_raw[idx]
-        key = _derive_cascade_key(
-            outer_layer["lock_id"],
-            outer_layer["priv"]["p"],
-            outer_layer["priv"]["q"],
-        )
-        encrypted_next = _encrypt_envelope(key, current_payload)
-        current_payload = {
-            "layer_index": idx,
-            "lock_id": outer_layer["lock_id"],
-            "pub": outer_layer["pub"],
-            "next_envelope": encrypted_next,
-        }
+        key = _derive_cascade_key(idx, layers[idx]["priv"]["p"], layers[idx]["priv"]["q"])
+        payload = _public_layer(layers[idx]["pub"], _encrypt_envelope(key, payload))
 
-    return {
-        "cascade_version": "3.0",
-        "total_layers": total_layers,
-        "lock_sequence": lock_sequence,
-        "public_challenge": current_payload,
+    public = {"format": CASCADE_FORMAT, "layers": total_layers, "challenge": payload}
+    private = {
+        "format": CASCADE_FORMAT,
+        "flag": final_flag.decode("utf-8", errors="replace"),
+        "lock_sequence": list(lock_sequence),
+        "solver_params": [g["params"] for g in layers],
+        "generator_params": [dict(lp) for lp in layer_params],
+        "seeds": [g["seed"] for g in layers],
+        "factors": [{"p": str(g["priv"]["p"]), "q": str(g["priv"]["q"])} for g in layers],
         "generation_metrics": [
             {
-                "layer_index": item["layer_index"],
-                "lock_id": item["lock_id"],
-                "N_bits": item["pub"]["N"].bit_length(),
-                "e_bits": item["pub"]["e"].bit_length(),
-                "gen_time_sec": item["gen_time_sec"],
+                "layer_index": idx,
+                "lock_id": g["lock_id"],
+                "N_bits": g["pub"]["N"].bit_length(),
+                "e_bits": g["pub"]["e"].bit_length(),
+                "gen_time_sec": g["gen_time_sec"],
             }
-            for item in layers_raw
+            for idx, g in enumerate(layers)
         ],
     }
+    return {"public": public, "private": private}
 
 
-def solve_cascade(cascade_bundle: Dict[str, Any], verbose: bool = False) -> Dict[str, Any]:
-    current = cascade_bundle["public_challenge"]
+def solve_cascade(
+    cascade: Dict[str, Any],
+    hints: Optional[Dict[str, Any]] = None,
+    verbose: bool = False,
+) -> Dict[str, Any]:
+    """Reference solver.
+
+    `cascade` is the public part (or the whole build_cascade result). `hints`
+    is the private manifest; the reference solver uses its `lock_sequence` and
+    `solver_params`. A real solver has to work those out on its own.
+    """
+    if "public" in cascade:
+        hints = hints or cascade["private"]
+        cascade = cascade["public"]
+    if hints is None:
+        raise ValueError("solve_cascade needs the private manifest (lock_sequence, solver_params).")
+    sequence = hints["lock_sequence"]
+    params = hints.get("solver_params") or [{} for _ in sequence]
+
+    current = cascade["challenge"]
     trace: List[Dict[str, Any]] = []
     t_start = time.time()
-
+    depth = 0
     while current is not None:
-        lid = current["lock_id"]
-        pub = current["pub"]
-        layer_idx = current["layer_index"]
-
-        solved = solve_single_lock(lid, pub, verbose=verbose)
+        lid = sequence[depth]
+        pub = {"N": int(current["N"]), "e": int(current["e"]), "c": int(current["c"])}
+        solved = solve_single_lock(lid, pub, verbose=verbose, **params[depth])
         p, q = solved["p"], solved["q"]
-        assert p * q == pub["N"], f"Layer {layer_idx} ({lid}) factorization check failed!"
-
-        msg_bytes = solved["plaintext_bytes"]
         trace.append({
-            "layer_index": layer_idx,
+            "layer_index": depth,
             "lock_id": lid,
             "p_bits": p.bit_length(),
             "q_bits": q.bit_length(),
             "solve_time_sec": solved["solve_time_sec"],
-            "recovered_message": msg_bytes.decode("utf-8", errors="replace"),
+            "recovered_message": solved["plaintext_bytes"].decode("utf-8", errors="replace"),
         })
-
-        next_env = current.get("next_envelope")
-        if next_env is None:
+        if current.get("next") is None:
             break
+        current = _decrypt_envelope(_derive_cascade_key(depth, p, q), current["next"])
+        depth += 1
 
-        key = _derive_cascade_key(lid, p, q)
-        current = _decrypt_envelope(key, next_env)
-
-    total_solve_time = round(time.time() - t_start, 4)
     return {
         "total_layers_solved": len(trace),
-        "total_solve_time_sec": total_solve_time,
+        "total_solve_time_sec": round(time.time() - t_start, 4),
         "final_flag": trace[-1]["recovered_message"] if trace else "",
         "layer_trace": trace,
     }

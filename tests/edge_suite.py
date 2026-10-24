@@ -1,6 +1,6 @@
 """
-edge_tests.py — Comprehensive Edge-Case, Honey-Trap Disguise & Adversarial Autopilot Test Suite
-================================================================================================
+edge_suite.py — Edge-Case, Decoy & Adversarial Autopilot Test Suite
+======================================================================
 Tests all 10 separated locks (Locks 01-10) and the cascade engine across 6 rigorous dimensions:
   1. Strict 1024-Bit Modulus & Exponent Geometry (N.bit_length() == 1024, 1 < e < N)
   2. NIST Monobit & Byte-Entropy Statistical Indistinguishability
@@ -10,9 +10,10 @@ Tests all 10 separated locks (Locks 01-10) and the cascade engine across 6 rigor
   6. Full End-to-End Trapdoor Solver & RSA Decryption Verification
 """
 
+import argparse
+import json
 import math
 import time
-import sys
 
 from trapdoor.ctflib import is_prime, primes_upto, ec_mul
 from trapdoor.arsenal.locks_A import (
@@ -135,9 +136,64 @@ def sandbox_autopilot_attacks(N, e):
     return True, "All 5 autopilot attacks defeated"
 
 
-def run_edge_suite(include_lock07=False):
+DECOY_LOCKS = {"lock01", "lock02", "lock04", "lock05", "lock06"}
+
+
+def check_decoy(lid, N, e, sk):
+    """True when lid's optional decoy is present in (N, e)."""
+    if lid == "lock01":
+        return (N - 1) % (1 << 12) == 0
+    if lid == "lock02":
+        max_q, ghost_d = continued_fraction_max_spike(e, N)
+        return max_q >= (1 << 50) and ghost_d == sk["d_fake"]
+    if lid == "lock04":
+        return (N - pow(65537, 1337, ROCA_DECOY_MOD)) % ROCA_DECOY_MOD == 0
+    if lid == "lock05":
+        return e % (1 << 80) == 3
+    if lid == "lock06":
+        return (e - N) % (1 << 120) == 0
+    return False
+
+
+def check_instance(lid, pub, sk, solve_fn, decoy):
+    N, e = pub["N"], pub["e"]
+    p, q = sk["p"], sk["q"]
+    assert set(pub) == {"N", "e"}, f"{lid}: public dict leaks {sorted(set(pub) - {'N', 'e'})}"
+
+    # 1. Strict 1024-bit N & 1 < e < N check
+    assert N == p * q and p != q and is_prime(p) and is_prime(q), f"{lid}: prime check failed"
+    assert N.bit_length() == 1024, f"{lid}: expected 1024-bit N, got {N.bit_length()}"
+    assert 1 < e < N, f"{lid}: exponent e out of range (1, N)"
+    assert math.gcd(e, (p - 1) * (q - 1)) == 1, f"{lid}: e not coprime to phi(N)"
+    if e > 65537:
+        assert e.bit_length() >= N.bit_length() - 2, f"{lid}: e is {e.bit_length()} bits, conspicuously short"
+
+    # 2. Statistical Monobit Entropy check
+    ok_ent, ratio = check_monobit_entropy(N)
+    assert ok_ent, f"{lid}: monobit entropy ratio {ratio:.4f} out of bounds"
+
+    # 3. Decoys appear only when asked for
+    if lid in DECOY_LOCKS:
+        assert check_decoy(lid, N, e, sk) == decoy, f"{lid}: decoy present={not decoy}, expected {decoy}"
+    if lid == "lock09":
+        assert (sk["H1"] >> 132) == (sk["H2"] >> 132) and abs(p - q).bit_length() >= 480
+
+    # 4. Sandbox Autopilot Immunity
+    ok_auto, msg_auto = sandbox_autopilot_attacks(N, e)
+    assert ok_auto, f"{lid}: {msg_auto}"
+
+    # 5. Trapdoor Solve & RSA Decryption Verification
+    sol = solve_fn(pub, verbose=False, **sk["params"])
+    assert sol is not None, f"{lid}: trapdoor solver returned None"
+    assert set(sol) == {p, q}, f"{lid}: recovered factors do not match {p, q}"
+    d_rsa = pow(e, -1, (p - 1) * (q - 1))
+    m_test = 12345678901234567890
+    assert pow(pow(m_test, e, N), d_rsa, N) == m_test
+
+
+def run_edge_suite(include_lock07=True, seeds=(0,), only=None):
     print("=" * 88)
-    print(" RUNNING EDGE-CASE, HONEY-TRAP DISGUISE & ADVERSARIAL AUTOPILOT TEST SUITE")
+    print(" RUNNING EDGE-CASE, DECOY & ADVERSARIAL AUTOPILOT TEST SUITE")
     print("=" * 88)
 
     locks_to_test = [
@@ -153,64 +209,31 @@ def run_edge_suite(include_lock07=False):
     ]
     if include_lock07:
         locks_to_test.insert(6, ("lock07", lock07_generate, lock07_solve))
+    if only:
+        locks_to_test = [t for t in locks_to_test if t[0] in only]
 
-    instances = {}
     for lid, gen_fn, solve_fn in locks_to_test:
-        print(f"\n--- Testing {lid.upper()} ---")
-        pub, sk = gen_fn(seed=100 + int(lid[-2:]), verbose=True)
-        N, e = pub["N"], pub["e"]
-        p, q = sk["p"], sk["q"]
+        modes = [False, True] if lid in DECOY_LOCKS else [False]
+        for seed in seeds:
+            for decoy in modes:
+                kwargs = {"decoy": True} if decoy else {}
+                t0 = time.time()
+                pub, sk = gen_fn(seed=100 + int(lid[-2:]) + 7919 * seed, verbose=False, **kwargs)
+                check_instance(lid, pub, sk, solve_fn, decoy)
+                print(f"  {lid} seed={seed} decoy={'on ' if decoy else 'off'} PASS ({time.time() - t0:.1f}s)",
+                      flush=True)
 
-        # 1. Strict 1024-bit N & 1 < e < N check
-        assert N == p * q and p != q and is_prime(p) and is_prime(q), f"{lid}: prime check failed"
-        assert N.bit_length() == 1024, f"{lid}: expected 1024-bit N, got {N.bit_length()}"
-        assert 1 < e < N, f"{lid}: exponent e out of range (1, N)"
-        assert math.gcd(e, (p - 1) * (q - 1)) == 1, f"{lid}: e not coprime to phi(N)"
+    if only is None:
+        run_boundary_and_tamper_tests()
 
-        # 2. Statistical Monobit Entropy check
-        ok_ent, ratio = check_monobit_entropy(N)
-        assert ok_ent, f"{lid}: monobit entropy ratio {ratio:.4f} out of bounds"
-        print(f"  [Edge 1-2] N=1024b | e={e.bit_length()}b (<N) | Monobit 1-ratio={ratio:.4f} PASS")
+    print("\n" + "=" * 88)
+    print(f" ALL {len(locks_to_test)} LOCKS x {len(seeds)} SEEDS & EDGE TESTS PASSED")
+    print("=" * 88)
 
-        # 3. Verify Planted False-Hope Disguises
-        if lid == "lock01":
-            assert (N - 1) % (1 << 12) == 0
-            print("  [Disguise] Lock 01 2-adic Fermat mask N == 1 (mod 2^12) verified PASS")
-        elif lid == "lock02":
-            max_q, ghost_d = continued_fraction_max_spike(e, N)
-            assert max_q >= (1 << 50) and ghost_d == sk["d_fake"]
-            print(f"  [Disguise] Lock 02 ECF Ghost Convergent verified: spike a_r=2^{max_q.bit_length()-1}, d_fake={ghost_d.bit_length()}b PASS")
-        elif lid == "lock04":
-            assert (N - pow(65537, 1337, ROCA_DECOY_MOD)) % ROCA_DECOY_MOD == 0
-            print("  [Disguise] Lock 04 Fake ROCA Primorial Signature N == 65537^1337 (mod P_37) verified PASS")
-        elif lid == "lock05":
-            assert e % (1 << 80) == 3
-            print("  [Disguise] Lock 05 Fake Low-Exponent Mask e == 3 (mod 2^80) verified PASS")
-        elif lid == "lock06":
-            assert (e - N) % (1 << 120) == 0
-            print("  [Disguise] Lock 06 Fake 120-bit LSB Match (e == N mod 2^120) verified PASS")
-        elif lid == "lock09":
-            assert (sk["H1"] >> 132) == (sk["H2"] >> 132) and abs(p - q).bit_length() >= 480
-            print(f"  [Disguise] Lock 09 Fake Fermat 20b Halo verified (|p-q|={abs(p-q).bit_length()}b) PASS")
 
-        # 4. Sandbox Autopilot Immunity
-        ok_auto, msg_auto = sandbox_autopilot_attacks(N, e)
-        assert ok_auto, f"{lid}: {msg_auto}"
-        print(f"  [Autopilot] {msg_auto} PASS")
-
-        # 5. Trapdoor Solve & RSA Decryption Verification
-        sol = solve_fn(pub, verbose=True)
-        assert sol is not None, f"{lid}: trapdoor solver returned None"
-        assert set(sol) == {p, q}, f"{lid}: recovered factors do not match {p, q}"
-        d_rsa = pow(e, -1, (p - 1) * (q - 1))
-        m_test = 12345678901234567890
-        c_test = pow(m_test, e, N)
-        assert pow(c_test, d_rsa, N) == m_test
-        instances[lid] = pub
-
-    # 6. Boundary & Tamper Edge Tests
+def run_boundary_and_tamper_tests():
     print("\n--- Testing Boundary & Tamper Edge Cases ---")
-    # Test Lock 08 Coppersmith at extreme mask boundaries delta=1 and delta=15
+    # Lock 08 Coppersmith recovers the exact 106-bit root
     pub8, sk8 = lock08_generate(mask_bits=4, x0_bits=106, seed=999, verbose=False)
     U_hi = (sk8["u3"] << 240) + sk8["u2"]
     U_lo = (sk8["u1"] << 240) + sk8["u0"]
@@ -218,28 +241,30 @@ def run_edge_suite(include_lock07=False):
     assert root8 == sk8["x0"], "Lock 08 boundary root recovery failed"
     print("  [Boundary] Lock 08 exact 106-bit root recovery verified PASS")
 
-    # Test Cascade HMAC Tamper Rejection
+    # Cascade: public part carries only N, e, c, next; HMAC rejects tampering
     bundle = build_cascade(["lock01", "lock09"], final_flag=b"FLAG{Edge_Test_OK}", seed=777, verbose=False)
-    # Tamper with 1 byte of the outer encrypted envelope
-    orig_tag = bundle["public_challenge"]["next_envelope"]["hmac_sha256"]
-    bundle["public_challenge"]["next_envelope"]["hmac_sha256"] = ("0" if orig_tag[0] != "0" else "1") + orig_tag[1:]
+    assert set(bundle["public"]["challenge"]) == {"N", "e", "c", "next"}
+    assert "lock" not in json.dumps(bundle["public"]), "public cascade mentions a lock id"
+    env = bundle["public"]["challenge"]["next"]
+    orig_tag = env["hmac_sha256"]
+    env["hmac_sha256"] = ("0" if orig_tag[0] != "0" else "1") + orig_tag[1:]
     tamper_caught = False
     try:
         solve_cascade(bundle, verbose=False)
     except ValueError as ve:
-        if "HMAC" in str(ve):
-            tamper_caught = True
+        tamper_caught = "HMAC" in str(ve)
     assert tamper_caught, "Cascade failed to reject tampered HMAC"
-    bundle["public_challenge"]["next_envelope"]["hmac_sha256"] = orig_tag
+    env["hmac_sha256"] = orig_tag
     res_cas = solve_cascade(bundle, verbose=False)
     assert res_cas["final_flag"] == "FLAG{Edge_Test_OK}"
-    print("  [Security] Cascade HMAC tamper rejection & recovery verified PASS")
-
-    print("\n" + "=" * 88)
-    print(f" ALL {len(locks_to_test)} LOCKS & EDGE TESTS PASSED 100%!")
-    print("=" * 88)
+    print("  [Security] Cascade surface, HMAC tamper rejection & recovery verified PASS")
 
 
 if __name__ == "__main__":
-    inc7 = "--with-lock07" in sys.argv
-    run_edge_suite(include_lock07=inc7)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--seeds", type=int, default=1, help="number of seeds per lock")
+    ap.add_argument("--skip-lock07", action="store_true", help="lock07 keygen takes ~1 min")
+    ap.add_argument("--only", type=str, help="comma-separated lock ids (skips boundary tests)")
+    a = ap.parse_args()
+    run_edge_suite(include_lock07=not a.skip_lock07, seeds=tuple(range(a.seeds)),
+                   only=set(a.only.split(",")) if a.only else None)

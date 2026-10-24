@@ -60,6 +60,24 @@ def _crt_combine(residues, moduli):
     return r_all % M_all, M_all
 
 
+def _lift_exponent(e_r, step, N, phi_N, tries=500):
+    """Random e = e_r + m*step in (N/2, N) with gcd(e, phi_N) = 1.
+
+    Taking the largest or smallest representative leaves e conspicuously close
+    to N or short by a few bits; a random lift keeps e indistinguishable from
+    a uniform exponent while preserving e mod step.
+    """
+    m_lo = max(0, (N // 2 - e_r) // step + 1)
+    m_hi = (N - 1 - e_r) // step
+    if m_hi < m_lo:
+        return None
+    for _ in range(tries):
+        cand = e_r + random.randint(m_lo, m_hi) * step
+        if 1 < cand < N and math.gcd(cand, phi_N) == 1:
+            return cand
+    return None
+
+
 # ======================================================================
 # LOCK 01: Phi_6(p) = p^2 - p + 1 Galois-Frobenius Torus T_6 in Z_N[zeta_7]
 # ======================================================================
@@ -152,7 +170,7 @@ def _poly_extgcd_inv(a_canon, mod_poly, n):
     return [(old_t[i] * inv_c) % n if i < len(old_t) else 0 for i in range(deg)]
 
 
-def lock01_generate(K_bound=1 << 11, B=1 << 13, n_small=38, seed=None, verbose=True):
+def lock01_generate(K_bound=1 << 11, B=1 << 13, n_small=38, seed=None, verbose=True, decoy=False):
     if seed is not None:
         random.seed(seed)
     t0 = time.time()
@@ -187,8 +205,9 @@ def lock01_generate(K_bound=1 << 11, B=1 << 13, n_small=38, seed=None, verbose=T
         if p is not None:
             break
 
-    # False-hope Fermat/2-adic disguise modulus: force N == 1 (mod 2^12)
-    mask_mod = 1 << 12
+    # Optional false-hope 2-adic disguise: force N == 1 (mod 2^12). Off by default:
+    # an honest N hits this with probability 2^-12, so it flags the key as built.
+    mask_mod = 1 << 12 if decoy else 1
     while True:
         d1 = random.randrange(3, K_bound)
         if not is_prime(d1):
@@ -205,7 +224,9 @@ def lock01_generate(K_bound=1 << 11, B=1 << 13, n_small=38, seed=None, verbose=T
         r_q, step_q = _crt_combine([r_q_c6, r_q_mask], [C6, mask_mod])
         lo_q = (1 << 1023) // p + 1
         hi_q = ((1 << 1024) - 1) // p
-        m0 = max(1, (lo_q - r_q) // step_q)
+        # Random start inside [lo_q, hi_q]; starting at lo_q made N ~ 2^1023 (top bits 100..0).
+        m_lo = max(1, (lo_q - r_q) // step_q)
+        m0 = random.randint(m_lo, max(m_lo, (hi_q - r_q) // step_q - 5000))
         q = None
         for m in range(m0, m0 + 5000):
             cand_q = r_q + m * step_q
@@ -223,15 +244,15 @@ def lock01_generate(K_bound=1 << 11, B=1 << 13, n_small=38, seed=None, verbose=T
         print("  [Lock 01 KeyGen] %.2fs | p=%db q=%db N=%db | C6=%db | Mobius(N-3,2N+5) | d1=%d d2=%d" %
               (time.time() - t0, p.bit_length(), q.bit_length(), N.bit_length(),
                C6.bit_length(), d1, d2))
-    pub = {"N": N, "e": 65537, "K_bound": K_bound, "B": B}
+    pub = {"N": N, "e": 65537}
     sk = {"p": p, "q": q, "d1": d1, "d2": d2, "Phi6": Phi6, "C6": C6}
+    # Search bounds are solver knowledge, not part of the public surface.
+    sk["params"] = {"K_bound": K_bound, "B": B}
     return pub, sk
 
 
-def lock01_solve(pub, verbose=True):
+def lock01_solve(pub, verbose=True, K_bound=1 << 11, B=1 << 13):
     N = int(pub["N"])
-    K_bound = int(pub.get("K_bound", 1 << 11))
-    B = int(pub.get("B", 1 << 13))
     t0 = time.time()
 
     M = math.prod([l for l in primes_upto(B) if l % 6 == 1])
@@ -310,7 +331,7 @@ def _redei2_pow(P, k, delta, n):
     return res
 
 
-def lock02_generate(K_bound=1 << 11, B=1 << 13, n_small=35, seed=None, verbose=True):
+def lock02_generate(K_bound=1 << 11, B=1 << 13, n_small=35, seed=None, verbose=True, decoy=False):
     if seed is not None:
         random.seed(seed)
     t0 = time.time()
@@ -354,7 +375,8 @@ def lock02_generate(K_bound=1 << 11, B=1 << 13, n_small=35, seed=None, verbose=T
     k_fake = random.randrange(1 << 194, d_fake)
     while math.gcd(k_fake, d_fake) != 1:
         k_fake += 1
-    E_target = (k_fake * N) // d_fake
+    # Without the decoy, aim e at a uniform point instead of the planted convergent.
+    E_target = (k_fake * N) // d_fake if decoy else random.randrange(N // 2, N)
 
     while True:
         d1 = random.randrange(3, K_bound)
@@ -375,27 +397,32 @@ def lock02_generate(K_bound=1 << 11, B=1 << 13, n_small=35, seed=None, verbose=T
             if 1 < cand_e < N and math.gcd(cand_e, phi_N) == 1:
                 e = cand_e
                 break
-        if e is not None:
+        if e is None:
+            continue
+        # Next partial quotient after k_fake/d_fake is ~ N / (d_fake * |e*d_fake - k_fake*N|);
+        # require 2^52 so the advertised 2^50 spike holds with margin on every seed.
+        err = abs(e * d_fake - k_fake * N)
+        if not decoy or (err and N // (d_fake * err) >= 1 << 52):
             break
 
     assert N.bit_length() == 1024 and 1 < e < N
-    assert abs(e * d_fake - k_fake * N) * (2 * d_fake) < N
+    assert not decoy or abs(e * d_fake - k_fake * N) * (2 * d_fake) < N
     assert (d2 * M_full * (e + 3 * N) - d1 * M_full * (2 * e + 5 * N)) % Phi4 == 0
     if verbose:
         print("  [Lock 02 KeyGen] %.2fs | p=%db q=%db N=%db | e=%db (ECF Ghost d_fake=%db) | d1=%d d2=%d" %
               (time.time() - t0, p.bit_length(), q.bit_length(), N.bit_length(),
                e.bit_length(), d_fake.bit_length(), d1, d2))
-    pub = {"N": N, "e": e, "K_bound": K_bound, "B": B}
+    pub = {"N": N, "e": e}
     sk = {"p": p, "q": q, "d1": d1, "d2": d2, "Phi4": Phi4, "C4": C4,
           "d_fake": d_fake, "k_fake": k_fake}
+    # Search bounds are solver knowledge, not part of the public surface.
+    sk["params"] = {"K_bound": K_bound, "B": B}
     return pub, sk
 
 
-def lock02_solve(pub, verbose=True):
+def lock02_solve(pub, verbose=True, K_bound=1 << 11, B=1 << 13):
     N = int(pub["N"])
     e = int(pub["e"])
-    K_bound = int(pub.get("K_bound", 1 << 11))
-    B = int(pub.get("B", 1 << 13))
     t0 = time.time()
 
     M = 2 * math.prod([l for l in primes_upto(B) if l % 4 == 1])
@@ -559,8 +586,9 @@ def lock03_generate(K_bound=1 << 11, B=1 << 13, n_small=25, seed=None, verbose=T
         if math.gcd(denom, C8) != 1:
             continue
         # Octic Shifted Entanglement: d2 * (e + 7N) == d1 * (3e + 11N) (mod C8)
-        e = (11 * d1 - 7 * d2) * N % C8 * pow(denom, -1, C8) % C8
-        if 1 < e < N and math.gcd(e, phi_N) == 1:
+        e_r = (11 * d1 - 7 * d2) * N % C8 * pow(denom, -1, C8) % C8
+        e = _lift_exponent(e_r, C8, N, phi_N)
+        if e is not None:
             break
 
     assert N.bit_length() == 1024 and 1 < e < N
@@ -569,16 +597,16 @@ def lock03_generate(K_bound=1 << 11, B=1 << 13, n_small=25, seed=None, verbose=T
         print("  [Lock 03 KeyGen] %.2fs | p=%db q=%db N=%db | e=%db (<N) | d1=%d d2=%d" %
               (time.time() - t0, p.bit_length(), q.bit_length(), N.bit_length(),
                e.bit_length(), d1, d2))
-    pub = {"N": N, "e": e, "K_bound": K_bound, "B": B}
+    pub = {"N": N, "e": e}
     sk = {"p": p, "q": q, "d1": d1, "d2": d2, "Phi8": Phi8, "C8": C8}
+    # Search bounds are solver knowledge, not part of the public surface.
+    sk["params"] = {"K_bound": K_bound, "B": B}
     return pub, sk
 
 
-def lock03_solve(pub, verbose=True):
+def lock03_solve(pub, verbose=True, K_bound=1 << 11, B=1 << 13):
     N = int(pub["N"])
     e = int(pub["e"])
-    K_bound = int(pub.get("K_bound", 1 << 11))
-    B = int(pub.get("B", 1 << 13))
     t0 = time.time()
 
     M = 2 * math.prod([l for l in primes_upto(B) if l % 8 == 1])
@@ -636,10 +664,11 @@ def lock03_solve(pub, verbose=True):
 ROCA_DECOY_MOD = math.prod([3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37])
 
 
-def lock04_generate(K_bound=1 << 11, B=1 << 13, n_small=18, seed=None, verbose=True):
+def lock04_generate(K_bound=1 << 11, B=1 << 13, n_small=18, seed=None, verbose=True, decoy=False):
     if seed is not None:
         random.seed(seed)
     t0 = time.time()
+    roca_mod = ROCA_DECOY_MOD if decoy else 1
     pool = [l for l in primes_upto(B) if l > (1 << 11) and pow(l - 7, (l - 1) // 2, l) == 1]
     M_smooth = (1 << 16) * math.prod([l for l in primes_upto(B) if l == 7 or (l > 2 and pow(l - 7, (l - 1) // 2, l) == 1)])
 
@@ -654,7 +683,9 @@ def lock04_generate(K_bound=1 << 11, B=1 << 13, n_small=18, seed=None, verbose=T
             s7 = sqrt_mod(l - 7, l)
             roots.append((1 + s7 * (v % l)) % l)
         r_u, M_u = _crt_combine(roots + [1], ls + [2])
-        lo_u = (1 << 255) + (3 << 252)
+        # Random start with u^2 in [2^511, 2^512): p = u^2 + 7v^2 is 512-bit and its top
+        # bits are not pinned (starting at the minimum gave p ~ 2^511, N ~ 2^1023).
+        lo_u = random.randrange(math.isqrt(1 << 511) + 1, (1 << 256) - (1 << 252))
         k0 = (lo_u - r_u) // M_u
         p = None
         for k in range(k0, k0 + 250000):
@@ -681,7 +712,7 @@ def lock04_generate(K_bound=1 << 11, B=1 << 13, n_small=18, seed=None, verbose=T
         C_7 = M_p // G
         while C_7 % 2 == 0:
             C_7 //= 2
-        if math.gcd(C_7, ROCA_DECOY_MOD) == 1:
+        if math.gcd(C_7, roca_mod) == 1:
             break
 
     while True:
@@ -697,11 +728,13 @@ def lock04_generate(K_bound=1 << 11, B=1 << 13, n_small=18, seed=None, verbose=T
         # Projective Mobius CM Entanglement: d2 * (N - 2) == d1 * (2N + 3) (mod C_7)
         r_q_cm = (2 * d2 + 3 * d1) * pow(denom, -1, C_7) % C_7
         # Fake ROCA Primorial Disguise: N = p*q == 65537^1337 (mod ROCA_DECOY_MOD)
-        r_q_roca = pow(65537, 1337, ROCA_DECOY_MOD) * pow(p, -1, ROCA_DECOY_MOD) % ROCA_DECOY_MOD
-        r_q, step_q = _crt_combine([r_q_cm, r_q_roca, 1], [C_7, ROCA_DECOY_MOD, 2])
+        r_q_roca = pow(65537, 1337, roca_mod) * pow(p, -1, roca_mod) % roca_mod
+        r_q, step_q = _crt_combine([r_q_cm, r_q_roca, 1], [C_7, roca_mod, 2])
         lo_q = (1 << 1023) // p + 1
         hi_q = ((1 << 1024) - 1) // p
-        m0 = max(1, (lo_q - r_q) // step_q)
+        # Random start inside [lo_q, hi_q]; starting at lo_q made N ~ 2^1023 (top bits 100..0).
+        m_lo = max(1, (lo_q - r_q) // step_q)
+        m0 = random.randint(m_lo, max(m_lo, (hi_q - r_q) // step_q - 5000))
         q = None
         for m in range(m0, m0 + 5000):
             cand = r_q + m * step_q
@@ -713,21 +746,21 @@ def lock04_generate(K_bound=1 << 11, B=1 << 13, n_small=18, seed=None, verbose=T
 
     N = p * q
     assert N.bit_length() == 1024
-    assert (N - pow(65537, 1337, ROCA_DECOY_MOD)) % ROCA_DECOY_MOD == 0
+    assert (N - pow(65537, 1337, roca_mod)) % roca_mod == 0
     assert (d2 * M_smooth * (N - 2) - d1 * M_smooth * (2 * N + 3)) % M_p == 0
     if verbose:
         print("  [Lock 04 KeyGen] %.2fs | p=%db q=%db N=%db | j=-3375 C_{-7}=%db (Fake ROCA mod P_37) | d1=%d d2=%d" %
               (time.time() - t0, p.bit_length(), q.bit_length(), N.bit_length(),
                C_7.bit_length(), d1, d2))
-    pub = {"N": N, "e": 65537, "K_bound": K_bound, "B": B}
+    pub = {"N": N, "e": 65537}
     sk = {"p": p, "q": q, "M_p": M_p, "C_7": C_7, "d1": d1, "d2": d2}
+    # Search bounds are solver knowledge, not part of the public surface.
+    sk["params"] = {"K_bound": K_bound, "B": B}
     return pub, sk
 
 
-def lock04_solve(pub, verbose=True):
+def lock04_solve(pub, verbose=True, K_bound=1 << 11, B=1 << 13):
     N = int(pub["N"])
-    K_bound = int(pub.get("K_bound", 1 << 11))
-    B = int(pub.get("B", 1 << 13))
     t0 = time.time()
 
     M_smooth = (1 << 16) * math.prod([l for l in primes_upto(B) if l == 7 or (l > 2 and pow(l - 7, (l - 1) // 2, l) == 1)])
@@ -878,7 +911,7 @@ def _mumford_disc_inv(u, n):
     return (u1 * u1 - 4 * u0) % n
 
 
-def lock05_generate(K_bound=1 << 11, B=1 << 13, n_small=34, seed=None, verbose=True):
+def lock05_generate(K_bound=1 << 11, B=1 << 13, n_small=34, seed=None, verbose=True, decoy=False):
     if seed is not None:
         random.seed(seed)
     t0 = time.time()
@@ -915,7 +948,7 @@ def lock05_generate(K_bound=1 << 11, B=1 << 13, n_small=34, seed=None, verbose=T
     N = p * q
     phi_N = (p - 1) * (q - 1)
 
-    mask80 = 1 << 80
+    mask80 = 1 << 80 if decoy else 1
     while True:
         d1 = random.randrange(3, K_bound)
         if not is_prime(d1):
@@ -929,34 +962,28 @@ def lock05_generate(K_bound=1 << 11, B=1 << 13, n_small=34, seed=None, verbose=T
         # Quadratic Self-Referential Jacobian Entanglement: d2*(e + N^2) == d1*(2e + N) (mod C_jac)
         e_jac = (d1 * N - d2 * N * N) % C_jac * pow(denom, -1, C_jac) % C_jac
         # Plant Fake Low-Exponent Mask: e == 3 (mod 2^80)
-        e_r, step_e = _crt_combine([e_jac, 3], [C_jac, mask80])
-        m_hi = (N - 1 - e_r) // step_e
-        e = None
-        for m in range(m_hi, max(1, m_hi - 500), -1):
-            cand_e = e_r + m * step_e
-            if 1 < cand_e < N and math.gcd(cand_e, phi_N) == 1:
-                e = cand_e
-                break
+        e_r, step_e = _crt_combine([e_jac, 3 % mask80], [C_jac, mask80])
+        e = _lift_exponent(e_r, step_e, N, phi_N)
         if e is not None:
             break
 
     assert N.bit_length() == 1024 and 1 < e < N
-    assert e % mask80 == 3
+    assert e % mask80 == 3 % mask80
     assert (d2 * M_full * (e + N * N) - d1 * M_full * (2 * e + N)) % J_ord == 0
     if verbose:
         print("  [Lock 05 KeyGen] %.2fs | p=%db q=%db N=%db | e=%db (e==3 mod 2^80 decoy) | d1=%d d2=%d" %
               (time.time() - t0, p.bit_length(), q.bit_length(), N.bit_length(),
                e.bit_length(), d1, d2))
-    pub = {"N": N, "e": e, "K_bound": K_bound, "B": B}
+    pub = {"N": N, "e": e}
     sk = {"p": p, "q": q, "d1": d1, "d2": d2, "J_ord": J_ord, "C_jac": C_jac}
+    # Search bounds are solver knowledge, not part of the public surface.
+    sk["params"] = {"K_bound": K_bound, "B": B}
     return pub, sk
 
 
-def lock05_solve(pub, verbose=True):
+def lock05_solve(pub, verbose=True, K_bound=1 << 11, B=1 << 13):
     N = int(pub["N"])
     e = int(pub["e"])
-    K_bound = int(pub.get("K_bound", 1 << 11))
-    B = int(pub.get("B", 1 << 13))
     t0 = time.time()
 
     M = 2 * math.prod([l for l in primes_upto(B) if l % 4 == 1])
