@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quick:
+    name: quick tests (${{ matrix.backend }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [accelerated, pure]
+    env:
+      TRAPDOOR_PURE: ${{ matrix.backend == 'pure' && '1' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install pytest
+          if [ "${{ matrix.backend }}" = "accelerated" ]; then pip install -r requirements-fast.txt; fi
+      - name: Compile
+        run: python -m compileall -q trapdoor tests
+      - name: Quick lock + cascade tests
+        run: python -m pytest -q tests/test_quick.py --durations=5
+      - name: Edge suite (one seed)
+        run: python -u -m tests.edge_suite --seeds 1

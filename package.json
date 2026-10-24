@@ -1,0 +1,13 @@
+{
+  "name": "cryptographic-trapdoor-arsenal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Advanced Cryptographic Trapdoor Arsenal & Cascade Engine",
+  "scripts": {
+    "dev": "python3 -m trapdoor.arsenal.dashboard",
+    "start": "python3 -m trapdoor.arsenal.dashboard",
+    "build": "python3 -m compileall -q trapdoor tests",
+    "verify": "python3 -u -m trapdoor.arsenal.verify_locks",
+    "test": "python3 -u -m tests.edge_suite"
+  }
+}

@@ -1,6 +1,9 @@
 """
 puzzle_gen.py — 三层级联陷门 puzzle 生成器
 
+[Legacy] V2.1 格式 (XOR keystream 封装), 仅为复现已发布的 challenges/tri-cascade 而保留。
+新题请用 trapdoor/v4.py (HMAC 信封, 统一 LOCK_REGISTRY)。
+
 结构 (真级联, 非 XOR 胶水):
     Layer A  变种 6  隐藏共享基 M = 3^186 + d1, 残数不回绕
              -> 解出 p_A -> phi(N_A) -> RSA 解密 c_A -> seed_B
@@ -14,9 +17,9 @@ puzzle_gen.py — 三层级联陷门 puzzle 生成器
 每层的"下一层解封密钥"是该层 RSA 密文的明文, 所以层与层之间是密码学意义上的
 严格依赖, 而不是把三道独立题装进一个压缩包。
 """
-import json, hashlib, random, time, argparse, sys
+import json, hashlib, random, time, argparse, sys, os
 
-import variant6, variant7, variant9
+from trapdoor.variants import variant6, variant7, variant9
 
 FLAG = b"flag{tri_cascade_CM_prime_order_torus_and_hidden_shared_base}"
 
@@ -101,8 +104,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--bbits", type=int, default=16, help="Layer B 的 K_bound = 2^bbits")
     ap.add_argument("--seed", type=int, default=1023)
+    ap.add_argument("--outdir", default=os.path.join("challenges", "tri-cascade"))
     a = ap.parse_args()
     ch, so = build(layerB_bits=a.bbits, seed=a.seed)
-    json.dump(ch, open("challenge.json", "w"), indent=1)
-    json.dump(so, open("solution.json", "w"), indent=1)
-    print("写出 challenge.json (公开卷面) 与 solution.json (出题人私有)")
+    os.makedirs(a.outdir, exist_ok=True)
+    json.dump(ch, open(os.path.join(a.outdir, "challenge.json"), "w"), indent=1)
+    json.dump(so, open(os.path.join(a.outdir, "solution.json"), "w"), indent=1)
+    print("写出 %s/challenge.json (公开卷面) 与 solution.json (出题人私有)" % a.outdir)

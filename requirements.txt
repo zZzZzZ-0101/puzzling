@@ -1,0 +1,3 @@
+# Runtime: pure Python 3.10+, standard library only.
+# Optional accelerators live in requirements-fast.txt (gmpy2, fpylll).
+# Tests: pytest.

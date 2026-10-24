@@ -19,7 +19,7 @@
         (P0^(M e))^d2 ≡ (P0^(M N))^d1   (mod p)
 """
 import math, random, time, argparse
-from ctflib import is_prime, primes_upto, batch_poly_gcd
+from trapdoor.ctflib import is_prime, primes_upto, batch_poly_gcd
 
 # ------------------------------------------------- 三次 Pell 群 (签名已修正)
 def cubic_pell_mul(P, Q, a, n):
@@ -141,10 +141,10 @@ def generate(K_bound=1 << 15, n_small=26, lo=1 << 11, hi=1 << 14, seed=None, ver
 
 
 # ------------------------------------------------------------------ Solver
-def solve(N, e, a, B=1 << 14, K_bound=1 << 15, block=None, verbose=True):
+def solve(N, e, a, B=1 << 14, K_bound=1 << 15, block=None, max_trial=11, verbose=True):
     """公开卷面: (N, e, a, c)。解题者需自行推导双轨消元式并实现乘积树碰撞。"""
     M = math.prod([l for l in primes_upto(B) if l % 3 == 1])
-    for trial in range(1, 12):
+    for trial in range(1, max_trial + 1):
         # 基点必须落在范数 1 环面上, 否则其阶整除 p^3-1 而非 Phi_3(p), 碰撞式失效。
         # 构造: 任取 beta, m = Norm(beta); 则 Norm(beta^3 * m^{-1}) = m^3 / m^3 = 1。
         beta = (trial + 1, trial, 1)

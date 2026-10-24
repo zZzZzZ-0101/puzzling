@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.log
+# Author-only artefacts: never commit
+solution.json
+challenges/**/solution.json
+benchmark_results.json

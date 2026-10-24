@@ -31,7 +31,7 @@
            Coppersmith 界: X < N^(beta^2/deg) = N^0.125 = 2^128 > 2^104, 可解。
 """
 import math, random, time, argparse
-from ctflib import is_prime, sqrt_mod, lll
+from trapdoor.ctflib import is_prime, sqrt_mod, lll
 
 
 # --------------------------------------------- Coppersmith (未知除子变体)

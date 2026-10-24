@@ -6,8 +6,27 @@ ctflib.py - 密码学挑战赛陷门方案的公共算法库 (纯 Python, 无外
   - EC over Z/NZ     : 带因子捕获 (FactorFound) 的射影/仿射椭圆曲线算术
   - LLL              : 纯 Python 整数 LLL (Lovasz 条件, delta=0.99)
   - coppersmith_1d   : Howgrave-Graham 单变量模 p 小根
+
+可选加速 (装了就用, 没装退回纯 Python; 设 TRAPDOOR_PURE=1 强制纯 Python):
+  - gmpy2  : Kronecker 打包后的大整数乘法、素性测试
+  - fpylll : lll() 改走 fplll (变种 5 Stage 2 的 20 维格必须用它)
 """
-import math, random
+import math, os, random
+
+if os.environ.get("TRAPDOOR_PURE"):
+    gmpy2 = None
+    _fplll = None
+else:
+    try:
+        import gmpy2
+    except ImportError:
+        gmpy2 = None
+    try:
+        import fpylll as _fplll
+    except ImportError:
+        _fplll = None
+
+BACKEND = {"gmpy2": gmpy2 is not None, "fpylll": _fplll is not None}
 
 # ----------------------------------------------------------------- 数论基础
 _SMALL = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37]
@@ -16,6 +35,8 @@ _SMALL = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37]
 def is_prime(n):
     if n < 2:
         return False
+    if gmpy2 is not None:
+        return bool(gmpy2.is_prime(n, 25))
     for p in _SMALL:
         if n % p == 0:
             return n == p
@@ -125,7 +146,7 @@ def poly_mul(a, b, n):
     nb = (bits + 7) // 8
     A = int.from_bytes(b"".join((x % n).to_bytes(nb, "little") for x in a), "little")
     B = int.from_bytes(b"".join((x % n).to_bytes(nb, "little") for x in b), "little")
-    C = A * B
+    C = int(gmpy2.mpz(A) * gmpy2.mpz(B)) if gmpy2 is not None else A * B
     out = la + lb - 1
     raw = C.to_bytes(nb * (la + lb) + 8, "little")
     return [int.from_bytes(raw[i * nb:(i + 1) * nb], "little") % n for i in range(out)]
@@ -318,10 +339,14 @@ def lll(B, delta=(3, 4)):
     避免分数运算在 1024-bit 系数下的爆炸式减速。
     前一版每次尺寸约简都重算整个 GSO (O(n^4) 次), 维度 >6 即不可用。
     """
+    dn, dd = delta
+    if _fplll is not None:
+        A = _fplll.IntegerMatrix.from_matrix([[int(x) for x in row] for row in B])
+        _fplll.LLL.reduction(A, delta=dn / dd)
+        return [[int(A[i, j]) for j in range(A.ncols)] for i in range(A.nrows)]
     B = [row[:] for row in B]
     n = len(B)
     m = len(B[0])
-    dn, dd = delta
 
     lam = [[0] * n for _ in range(n)]
     d = [1] * (n + 1)

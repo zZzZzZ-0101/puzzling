@@ -1,357 +1,107 @@
-# Tri-Cascade Trapdoor Challenge
+# puzzling — RSA Trapdoor Challenge Workbench
 
-一套 RSA 陷门（kleptographic backdoor）密码学挑战题的**验算、修复、重构与成题**记录。
+RSA kleptographic-trapdoor (陷门) CTF challenges: generators, reference solvers,
+a shared pure-Python number-theory library, and the audit notes behind them.
 
-起点是一份名为《密码学挑战赛超算级隐式陷门 V2.0》的设计报告，提出 10 种陷门方案，声称"90% 原创代数推导"、全部"已通过 Python 解释器实测验证"、并以 15–45 秒的求解工程量"锁死 AI"。本仓库是对该报告逐条机械验算的结果，以及在此基础上重建出的一道可运行、可复现的三层级联挑战题。
+The repo holds two generations of work:
 
-**核心结论先说**：原报告的代数恒等式多数是对的，但三个关键卖点——"已实测验证"、"工程量锁死 AI"、"90% 原创"——全部不成立。十个方案中有确定性运行失败的、有代数与代码不是同一个数学对象的、有核心工具函数被反复调用却从未定义的。本仓库保留了其中四个代数正确的方案，把它们真正跑通，并重建了一个工程量估算诚实的版本。
-
----
-
-## 快速开始
-
-```bash
-# 纯 Python 3，无外部依赖（无需 sympy / sage / fpylll）
-python3 puzzle_gen.py --bbits 16 --seed 1023   # 生成 challenge.json + solution.json
-python3 puzzle_solve.py                        # 参考解题器，约 400 秒拿到 flag
-```
-
-单独跑某一层：
-
-```bash
-python3 variant9.py --bits 15 --seed 20261023  # 纯素数阶 CM 自指碰撞
-python3 variant7.py --bits 13 --seed 77        # 三次 Pell 曲面双轨碰撞
-python3 variant6.py --seed 606                 # 隐藏共享基 + 已知低位 Coppersmith
-python3 variant5.py --mask 4                   # 双阶段格级联（Stage 2 需 fpylll，见下）
-```
-
----
-
-## 仓库结构
-
-| 文件 | 内容 |
-| :--- | :--- |
-| `ctflib.py` | 公共库：Kronecker 代换多项式乘法、Newton 迭代除法、子乘积树 Batch-GCD、$\mathbb{Z}/N\mathbb{Z}$ 上带因子捕获的椭圆曲线算术、整数 LLL |
-| `variant9.py` | 变种 9：纯素数阶复乘椭圆曲线跨模自指碰撞陷门 |
-| `variant7.py` | 变种 7：三次 Pell 曲面双轨交叉指数碰撞陷门 |
-| `variant6.py` | 变种 6：隐藏共享基陷门（重构版，原方案求解路径不可行） |
-| `variant5.py` | 变种 5：双阶段异构正交格 + Coppersmith 级联（Stage 1 可跑，Stage 2 受限） |
-| `puzzle_gen.py` | 三层级联挑战题生成器 |
-| `puzzle_solve.py` | 参考解题器，仅读公开卷面 |
-| `challenge.json` | 公开卷面 |
-| `solution.json` | 出题人私有解（**发布时请删除**） |
-
----
-
-## 第一部分：对原报告的验算结论
-
-所有数字均为本机实测，非估算。
-
-### 确定性运行失败
-
-**变种 1 的 KeyGen 必定抛异常。** 素数池是 `range(32771, B, 6)`，起点 $32771 \equiv 5 \pmod 6$，因此池中每个 $\ell$ 都满足 $\ell \equiv 2 \pmod 3$。但下一行要对每个 $\ell$ 求 $x^2 - x + 1 \equiv 0 \pmod \ell$ 的根，该方程有根当且仅当 $\ell \equiv 1 \pmod 3$。实测池中**前 60 个素数全部无根**，`next(...)` 直接 `StopIteration`。
-
-即使修好同余类仍不可用：随机抽 32 个素数得 $\log_2 L \approx 499$，取最大的 32 个上限也只有 $513.29$，而代码要求 $p = \mathrm{CRT}(\cdots) \bmod L$ 恰为 512 位——因为恒有 $p < L$，这个条件几乎不可能满足。另外 solver 用的平滑乘子池 `range(7, B+1, 6)`（$\ell \equiv 1 \bmod 3$，这个是对的）与 KeyGen 的池**互不相交**。
-
-**变种 6 的 solver 恒返回空列表。** 它要求 $M = 3^{186} + \delta_1$ 在 $[101, 50000]$ 内至少有 8 个素因子。实测扫遍 $\delta_1 \in [1,128)$，小素因子个数分布为
-
-$$\{0{:}53,\quad 1{:}49,\quad 2{:}24,\quad 3{:}1\}$$
-
-最大仅 3 个，**没有任何 $\delta_1$ 能通过门槛**。且原构造 $N \equiv \alpha_0 p^2 + \delta_2 p \pmod M$ 对 $p$ 是二次的，还原 $p$ 需在未知分解的 295 位合数上开平方，这本身就是独立难题，而非报告所称"0.001 秒筛掉 99.9%"。
-
-**变种 4 没有一行可执行代码。** 唯一给出的 `cantor_composite_add` 中每一行都在调用未定义函数。
-
-### 工程量估算错误（两个方向都错）
-
-变种 9 声称"20 秒内分解"。实测纯 Python 在 1024 位模数上做 4000 步点加仅 0.5 秒，折算 16384 步约 2 秒，两条列表共 **4 秒**——比声称的快 5 倍，意味着这道题比设计者以为的更容易被试错撞开。
-
-变种 10 反向错得更远。其 solver 对 $K_{\text{bound}} = 4096$ 个 $\delta_2$ 各做一次 `quat_pow(·, M_smooth)`，而 $M_{\text{smooth}}$ 是所有小于 65536 的素数之积，比特长度实测 **94027**；单次四元数平方 $2.68 \times 10^{-5}$ 秒，一次完整幂运算 3.8 秒，4096 次即 **4.3 小时**，是声称 45 秒的 **344 倍**。
-
-### 代数与代码不是同一个对象
-
-变种 10 正文要求在 $R_3 = (\mathbb{Z}/N\mathbb{Z})[t]/(t^3-c)$ 上构造 12 维四元数代数才能得到 $\Phi_6(p) = p^2-p+1$ 的子群，但 `quat_mul` 只实现了 $\mathbb{Z}/N\mathbb{Z}$ 上的 4 维版本。4 维情形下模 $p$ 的群阶是 $p(p^2-1)$，**根本不含 $\Phi_6(p)$ 因子**，整个"坍缩"机制无从谈起。
-
-（其约化迹循环不变性 $\mathrm{trd}(XY) = \mathrm{trd}(YX)$ 本身是对的，最终的剥壳恒等式在 $\beta$ 与 $\alpha_0$ 对易的前提下也是对的。问题只在实现。）
-
-### 贯穿全文的两处硬伤
-
-**`batch_poly_gcd` 从未定义。** 它在变种 2、3、7、9、10 中被当作核心工具反复调用，报告把"分块多项式乘积树 Batch-GCD"吹成唯一破壁路径、反复强调它贡献了 25–45 秒的工程壁垒，然后把它留成一个函数名。同样缺失的还有变种 2 的 `x_dbl_mod` / `x_diff_add_general` / `x_ladder_scalar`、变种 9 的 `ec_add` / `ec_mul` / `FactorFound`、变种 4 的整套 `poly_*` 运算。
-
-**solver 与 KeyGen 的约定不一致。** 变种 7 和 9 的 solver 都只把**素数** $\delta_1$ 放进右表（注释写"仅保留素数 d1 消除比例平凡解"），但 KeyGen 用 `randint(2, K-1)` 抽，只要求 $\gcd(\delta_1,\delta_2)=1$。实测合法 $(\delta_1,\delta_2)$ 对中 $\delta_1$ 为素数的比例**仅 11.1%**——这些 solver 有近九成概率对着自己的题解不开。
-
-### 参数自相矛盾
-
-变种 2 的半平滑因子 $\ell_{\text{semi}}$ 一个参数四种说法：正文 24-bit、代码 `1<<20`–`1<<21`（20–21 bit）、代码注释 22-bit、总览表 22-bit。小素元个数正文说 30 个、代码写 `range(38)`。
-
-### 一个需要纠正的安全论断
-
-报告称变种 9"哪怕把 $N$ 放进超级计算机跑十万条 ECM 曲线"也会失败，理由是 $\#E_{CM}(\mathbb{F}_p) = M_p$ 是素数。**这个理由是错的。** ECM 的全部要义就在于随机化曲线，它根本不碰你那条 CM 曲线，它试的随机曲线群阶是 $p$ 附近的随机数，平滑概率与普通数无异。$N$ 确实扛得住 ECM，但原因是 $p$ 有 512 位（ECM 实际纪录约 274 位），与 $M_p$ 是否素数毫无关系。把正确结论挂在错误理由上，是最容易被顶尖解题者抓住并顺藤摸瓜的地方。
-
-### 两处我自己的误判（已更正）
-
-验算过程中我有两条初版结论是错的，一并记下：
-
-- 我曾判定变种 3 的 KeyGen"永不终止"。重测后单轮循环体仅 0.12 毫秒，期望 480 万次迭代约 **9 分钟**——慢但可行。
-- 我曾按对数范数分布判定变种 2 的 KeyGen 撞不上 512 位（$\log_2 N(\alpha) = 502.8 \pm 7.0$，距目标 1.3 个标准差）。实跑 4000 轮命中 96 次（2.4%），**KeyGen 可行**，只是需上万轮。
-
----
-
-## 第二部分：公共库
-
-### Kronecker 代换 + Newton 迭代除法
-
-原报告把"手写 Strassen 多项式分治乘积树 + 快速多点求值余数树"列为唯一破壁路径，却未给实现。本仓库补齐，并且发现了一个实现层面的关键事实：
-
-**光上 Newton 迭代没用。** 纯 Python 手写的 Karatsuba 递归常数太大，热循环全在解释器里。真正让它跑起来的是配上 **Kronecker 代换**——把多项式按固定位宽打包成一个大整数，让 CPython 自己的 C 层大整数乘法去做卷积，再拆回系数。位宽取
-
-$$w = 2\lceil \log_2 n \rceil + \lceil \log_2 \min(d_a, d_b) \rceil + 2$$
-
-并对齐到字节，用 `int.from_bytes` 打包、`to_bytes` 拆包，整个卷积只剩一次 `A * B`。
-
-有了快速乘法，Newton 除法才有意义：反转系数后求幂级数逆 $g \leftarrow g(2 - fg)$，每步精度倍增，把 `poly_rem` 从朴素 $O(d^2)$ 回代降到 $O(M(d))$。
-
-正确性已逐层对拍：Kronecker 乘法在度数 5/40/300 上与朴素卷积逐系数相同；Newton 除法在 $(200,100)$、$(1000,512)$、$(2000,1000)$ 三组上与朴素回代一致；`multipoint_eval` 在 500 点上与 Horner 求值一致；4000×4000 植入碰撞仍精确捕获 $p$。
-
-### 一条反直觉的结论
-
-分块大小的最优方向**取决于除法实现**，这一点原报告完全没提，却直接决定加硬档能否解出：
-
-- 若 `poly_rem` 是朴素 $O(d^2)$ 回代，总代价退化为 $O(K_L \cdot K_R)$，**与分块无关**——调大分块毫无帮助（我最初就栽在这里）。
-- 配上 Newton 除法后，每块对的代价变成 $O(M(B)\log B)$，总代价 $\propto K_L K_R M(B) \log B / B^2$，此时 **$B$ 越大越好**，故 `batch_poly_gcd` 默认整表一块。
-
-### 实测标度
-
-| $K_{\text{bound}}$ | $\pi(K)$ | 旧实现（朴素除法） | 新实现（Kronecker + Newton） | 提速 |
-| :--- | ---: | ---: | ---: | ---: |
-| $2^{15}$ | 3 512 | 47 s | **18.2 s** | 2.6× |
-| $2^{16}$ | 6 542 | 163 s | **51.3 s** | 3.2× |
-| $2^{18}$ | 23 000 | 2016 s | **400.7 s** | 5.0× |
-| $2^{20}$ | 82 025 | 7.1 h | 55 min | 7.8× |
-| $2^{22}$ | 295 947 | 92.7 h | 7.6 h | 12.2× |
-
-前三行为实测，后两行按实测指数外推。两组相邻点测得的标度指数分别为 **1.67** 和 **1.63**，确认从旧实现的 $K^{2.0}$ 降至约 $K^{1.65}$——提速倍数随 $K$ 增大而增大，正是加硬档最需要的方向。
-
-### 整数 LLL
-
-采用 de Weger 整数版（Cohen《A Course in Computational Algebraic Number Theory》算法 2.6.7），全程整数算术，无 `Fraction`/浮点。
-
-初版有两个 bug 值得记录，因为症状具有迷惑性：第一版每次尺寸约简都重算整个 GSO（$O(n^4)$ 次），维度一上去即不可用；改整数版后 `swap` 中 $\lambda$ 的更新公式排列错误，表现为三维格输出 **22 万比特**的"短"向量。按算法 2.6.7 重写后正常：三维格 0.02 秒精确恢复真值，十维 1.5 秒。
-
----
-
-## 第三部分：四个方案的状态与实测
-
-### 变种 9 — 纯素数阶复乘椭圆曲线跨模自指碰撞 ✅ 已端到端验证
-
-取 $D = 3$（Eisenstein）复乘，$p = A^2 - AB + B^2$，Frobenius 迹 $t = 2A - B$，强制群阶
-
-$$M_p = \#E_{CM}(\mathbb{F}_p) = p + 1 - t$$
-
-为 512 位素数（0% 平滑度）。由 $p = M_p + t - 1$ 得 $p \equiv t-1 \pmod{M_p}$，故取
-
-$$q = \left((t-1)^{-1}\delta_1\delta_2^{-1} \bmod M_p\right) + M_p$$
-
-即有
-
-$$\delta_2 N \equiv \delta_1 \pmod{M_p}$$
-
-从而在 $E_b(\mathbb{Z}/N\mathbb{Z})$ 上取自指倍点 $Q_0 = [N]P_0$，必有模 $p$ 碰撞
-
-$$[\delta_2]Q_0 = [\delta_1]P_0 \pmod p$$
-
-**验证**：$4p - t^2 = 3B^2$ 确认 $t$ 为合法 Frobenius 迹；碰撞式在正确的六次扭曲上严格成立，在错误扭曲上不成立（排除平凡解）；19 个试探基点中有 5 个落在阶为 $M_p$ 的扭曲上。
-
-**修复**：KeyGen 改为强制 $\delta_1, \delta_2$ **都取素数**。这一改同时解决四个问题——与 solver 的枚举约定对齐（原报告的致命不一致）、自动保证 $\gcd = 1$、消除 $(k\delta_1, k\delta_2)$ 比例平凡解、两侧表长从 $K$ 压到 $\pi(K)$ 使乘积树代价降低约 87 倍。
-
-**实测**：$K = 2^{15}$ 下 **747 秒**分解成功，命中第 14 条扭曲。
-
-**一个对出题有用的旋钮**：成本的 93% 花在猜错的扭曲上，而失败次数完全由 $p$ 决定、解题者事先无从知晓。若要收敛方差，可在卷面公开正确的 $b$——这不泄露任何秘密，因为 $\#E_b(\mathbb{F}_p)$ 是 512 位素数，知道曲线对平滑类攻击毫无帮助——难度从"747 秒且方差极大"收敛到"约 50 秒且确定"。若要最大化壁垒则保持现状。
-
-### 变种 7 — 三次 Pell 曲面双轨交叉指数碰撞 ✅ 已端到端验证
-
-当 $a$ 是模 $p$ 的非三次剩余时，$t^3 - a$ 在 $\mathbb{F}_p$ 上不可约，曲面
-
-$$\mathcal{C}_a: x^3 + ay^3 + a^2z^3 - 3axyz = 1$$
-
-是 $\mathbb{F}_{p^3}$ 的范数 1 环面，群阶恰为
-
-$$|\mathcal{C}_a(\mathbb{F}_p)| = \frac{p^3-1}{p-1} = p^2+p+1 = \Phi_3(p)$$
-
-令 $\Phi_3(p) = L_{\text{smooth}} \cdot C$，公钥设计为
-
-$$e \equiv (\delta_1 e_0 + C)(\delta_2 + C)^{-1} \pmod{\Phi_3(p)}, \qquad e_0 = N \bmod \Phi_3(p)$$
-
-两边乘 $(\delta_2 + C)M$ 并用 $MC \equiv 0$，得双轨消元式
-
-$$\delta_2 (Me) \equiv \delta_1 (MN) \pmod{\Phi_3(p)}$$
-
-**补全**：原报告只给了 solver，没有 KeyGen。本仓库用"取 $\ell_i \equiv 1 \pmod 3$、解 $x^2+x+1$ 的根、CRT 回去搜 512 位素数"构造出 $\Phi_3(p)$ 带 347 位平滑因子的 $p$。
-
-**修复**：原 `cubic_pell_pow(P0, M*e, N, a)` 中 $a$ 与 $n$ 参数对调；素数过滤不一致。
-
-**一个实现陷阱**：基点必须落在**范数 1 环面**上，否则其阶整除 $p^3-1$ 而非 $\Phi_3(p)$，碰撞式根本不成立。构造方法是任取 $\beta$，令 $m = \mathrm{Norm}(\beta)$，则
-
-$$\mathrm{Norm}(\beta^3 m^{-1}) = m^3/m^3 = 1$$
-
-**实测**：$K = 2^{13}$ 下 **34 秒**分解成功；$K = 2^{12}$、换种子 **4.6 秒**复现。
-
-### 变种 6 — 隐藏共享基（重构版）✅ 已端到端验证
-
-原方案的求解路径不可救（见第一部分）。本仓库保留"隐藏共享基"这一核心创意，换掉不可行的求解路径：把 $q$ 的低块从依赖 $L$ 改为常数 $\delta_2$，使关系对 $p$ 变为**线性**：
-
-$$p = H_1 M + L, \qquad q = H_2 M + \delta_2, \qquad M = 3^{186} + \delta_1$$
-
-$$\Longrightarrow\quad N = pq \equiv L\delta_2 \pmod M$$
-
-再强制 $L < 2^{260}$ 且 $\delta_2 < 2^8$，于是 $L\delta_2 < 2^{268} < M \approx 2^{294.8}$ **不发生回绕**，因此 $N \bmod M$ 作为整数恰好等于 $L\delta_2$。位长本身就是判据：猜对 $\delta_1$ 则位长 $\le 268$，猜错则在 $[0,M)$ 上近似均匀、位长约 295。
-
-筛选代价是 $2^{16}$ 次大整数取模（实测 **0.05 秒**），而非 4096 次 Coppersmith（57 小时）。定位 $\delta_1$ 后分解小整数 $r = N \bmod M$ 得 $\delta_2$ 与 $L$，最后一次"已知低位"Coppersmith（$f(x) = Mx + L \bmod p$，根 $H_1 \sim 2^{217} < N^{0.25}$）还原 $p$。
-
-再加一条收紧判据：$L$ 的最高位由 KeyGen 置位，故位长精确已知，可把 $\delta_2$ 候选从数十个压到 2 个，避免对错误 $\delta_2$ 白跑 50 秒的 Coppersmith。
-
-**实测**：两个不同种子均**在 $2^{16}$ 个候选中精确命中唯一一个**，全程 **104 秒** / **51 秒**分解成功。
-
-**诚实的强度说明**：$\delta_1$ 只有 16 位熵，这是"谜题难度"而非密码学难度。真正的壁垒在于推导出（a）$p,q$ 共享隐藏基 $M = 3^{186}+\delta_1$、（b）残数小到不回绕、（c）已知低位 Coppersmith。我也认真找过不猜基的通用攻击：$M \mid (N - L\delta_2)$ 且 $L\delta_2 < 2^{268}$，这是**单样本的近似公因子（ACD）问题**，单样本下无通用解法——所以结构本身不漏，漏的是基的可枚举性。
-
-### 变种 5 — 双阶段异构正交格 + Coppersmith ⚠️ Stage 1 已验证，Stage 2 受限
-
-Stage 1 的公钥满足 $u_0 e^2 + u_1 e + u_2 \equiv 0 \pmod N$，$u_i \sim 325$ 位。格
-
-$$\mathcal{L} = \{(x,y,z) : xe^2 + ye + z \equiv 0 \bmod N\}$$
-
-行列式为 $N$，故最短向量约 $N^{1/3} = 2^{341} > 2^{325}$，LLL 可精确恢复。**实测 0.02 秒精确恢复真值 $(u_0,u_1,u_2)$**，且判别式非完全平方（二次式在 $\mathbb{Z}$ 上无整数根），"死胡同"的误导性设计成立。
-
-Stage 2 在循环左移加掩码后，$f(x) = u_1x^2 + u_2x + (u_0+\delta)$ 在模 $p$ 下有小根。
-
-**原报告的参数在数学上不成立。** 未知除子 Coppersmith 的可解根界为
-
-$$X < N^E, \qquad E = \frac{2\beta m - \delta\, m(m+1)/n}{n-1}, \qquad n = \delta m + t$$
-
-对 $\delta = 2$、$\beta = 0.5$，**任何 $t=2$ 的取法都给出 $E = 0$**，即 $X < 1$，解不出任何根。实测用真值 $\delta$ 直接跑 $m=4, t=2$，67 秒返回一个 1 比特的伪根，正是这个预言。正确取法是 $t \approx \delta m(1/\beta - 1) = 2m$。
-
-**另一侧还有一个原文未提的下界**：KeyGen 构造使 $U = k_{\text{bits}} + 512 - 2x_{0,\text{bits}}$（原文 $k \sim 2^{21}$、$x_0 = 104$ 给出 $U = 325$，与原文自洽），而 Stage 1 要靠 LLL 恢复 $u$ 必须 $U < N^{1/3} = 341.3$，即 $x_0 \ge 96$。
-
-两侧夹出的可行窗口：
-
-| $x_0$ 位宽 | Stage 1（需 $U < 341.3$） | Stage 2 所需格维 |
+| Generation | What it is | Status |
 | :--- | :--- | :--- |
-| 88 | 失败（$U = 357$） | — |
-| 96–102 | 通过 | 16 维（$m{=}4, t{=}8$，界 102.4） |
-| 104（原文值） | 通过 | **20 维**（$m{=}5, t{=}10$，界 107.8） |
+| **V2.1 Tri-Cascade** | Audit of the "V2.0 超算级隐式陷门" report; 4 repaired variants (5/6/7/9) and a 3-layer cascade challenge (6 → 9 → 7) | End-to-end verified: reference solver recovers the flag in ~400 s |
+| **V3 Arsenal** | 10 "locks" (Φ₄/Φ₆/Φ₈/Φ₁₂ tori, D=−7 CM, genus-2 Jacobian, quaternion, SL₃, lattice, Chebyshev SETUP) + cascade engine + web dashboard. Imported from the AI Studio export | All 10 pass; edge suite on 20 seeds |
+| **V4 Cascade** | One registry for all 14 locks (V3 + variants 5/6/7/9), a public file with only (N, e, c) per layer, and a four-layer lineup with one technique family per layer | Built and solved end to end; see `trapdoor/v4.py` |
 
-**受限原因**：16–20 维、系数约 $2^{2500}$ 的 LLL，纯 Python 实现不可行（8 维即需 4 分钟以上）。solver 逻辑已写完整，换上 `fpylll` 或 SageMath 即可跑。
-
-另外，缩小实例绕不过去：512 位模数下 Stage 1 要求 $x_0 \ge 54$、Stage 2 只允许 $\le 36$，**窗口为空**——该方案在小规模下不存在可验证实例，只能上真尺寸。
-
----
-
-## 第四部分：三层级联挑战题
-
-### 结构
-
-三层按 **RSA 密码学依赖**串联，不是把三道独立题塞进一个压缩包。每层的"解封密钥"就是该层 RSA 密文的明文：
-
-```
-Layer A  变种 6（隐藏共享基）     公开 (N_A, e, c_A)
-         解出 p_A → φ(N_A) → 解密 c_A → seed_B
-            ↓
-Layer B  变种 9（纯素数阶 CM）     seed_B 解封出 (N_B, e, c_B)
-         解出 p_B → 解密 c_B → seed_C
-            ↓
-Layer C  变种 7（三次 Pell）       seed_C 解封出 (N_C, e_C, a, c_C)
-         解出 p_C → 解密 c_C → FLAG
-```
-
-不分解 $N_A$ 就拿不到 $\text{seed}_B$，拿不到 $\text{seed}_B$ 就连 $N_B$ 长什么样都不知道（卷面里它只是 5264 个 hex 字符）。层间是严格的密码学门，没有旁路。
-
-### 实测验证
-
-参考解题器仅读 `challenge.json`，端到端 **401.4 秒**拿到 flag，与 `solution.json` 一致：
-
-```
-[Layer A] 161.4s  分解 N_A 成功 (d1=63222 d2=101), 解出 seed_B
-[Layer B] 解封成功, N_B=1024 bit, K_bound=2^16
-          trial=3 命中, 表长 6542 x 6542
-[Layer B] 216.9s  分解 N_B 成功, 解出 seed_C
-[Layer C] 解封成功, N_C=1023 bit
-[Layer C]  23.1s  分解 N_C 成功
-FLAG = flag{tri_cascade_CM_prime_order_torus_and_hidden_shared_base}
-总耗时 401.4s
-```
+Status, measurements and remaining work: **[docs/ROADMAP.md](docs/ROADMAP.md)**.
+Solve-time curves: **[docs/benchmarks.md](docs/benchmarks.md)**.
 
 ---
 
-## 第五部分：难度评估与加硬路线
+## Layout
 
-**当前配置不是顶级，需要直说。**
+```
+trapdoor/                    Python package (pure Python 3.10+, stdlib only)
+├── ctflib.py                shared library: Kronecker poly-mul, Newton division,
+│                            subproduct-tree batch_poly_gcd, EC arithmetic mod N, integer LLL;
+│                            uses gmpy2 / fpylll when installed (TRAPDOOR_PURE=1 disables)
+├── v4.py                    Cascade V4: build / solve / release check
+├── variants/                V2.1 repaired trapdoor variants
+│   ├── variant5.py          two-stage orthogonal lattice + Coppersmith (Stage 2 needs fpylll)
+│   ├── variant6.py          hidden shared base 3^186 + δ₁, no-wrap residue
+│   ├── variant7.py          cubic Pell norm-1 torus Φ₃(p)
+│   └── variant9.py          prime-order D=3 CM curve, self-referential collision
+├── tricascade/              V2.1 three-layer challenge
+│   ├── puzzle_gen.py        builds challenge.json + solution.json
+│   └── puzzle_solve.py      reference solver (reads only challenge.json)
+└── arsenal/                 lock registry (V3 locks + V2.1 variants)
+    ├── locks_A.py           locks 01–05
+    ├── locks_B.py           locks 06–10
+    ├── variant_locks.py     variants 5/6/7/9 behind the same lock interface
+    ├── cascade_engine.py    LOCK_REGISTRY, single-lock runner, public/private cascade
+    ├── verify_locks.py      CLI verification runner (--lock, --K, --cascade)
+    ├── benchmark.py         solve-time curves -> docs/benchmarks.md
+    └── dashboard.py         HTTP dashboard on :3000 (was main.py)
 
-### 现状
+tests/
+├── test_quick.py            pytest: every lock at a small bound + cascade surface (~75 s)
+└── edge_suite.py            edge-case / decoy / autopilot suite, --seeds N (was edge_tests.py)
 
-**最大问题是 Layer A 太弱，而它是入口。** 级联的入口门槛等于最弱那层。$\delta_1$ 只有 16 位熵，不回绕判据 0.05 秒扫完。真正挡人的只有一件事：猜到基是 $3^{186}$。而 $R = b^k \approx 2^{295}$ 的组合很少——$(2,295)$、$(3,186)$、$(5,127)$、$(6,114)$、$(7,105)$、$(10,89)$——几分钟就能试完。这是 security by obscurity，不是硬度。
+.github/workflows/ci.yml     quick tests + one-seed edge suite, with and without gmpy2/fpylll
 
-**Layer C 次弱**：卷面公开了 $a$ 和一个非常规的 $e$，等于直接提示"这是三次结构"，且 $K = 2^{13}$ 偏小。
+challenges/
+├── tri-cascade/challenge.json   published V2.1 challenge (legacy format)
+└── v4/                          V4 build output (solution.json is git-ignored)
 
-**Layer B 是真的硬**：卷面只有 $(N, e{=}65537, c)$，零提示，需同时推导出四件事——存在复乘曲线、群阶是 512 位素数故一切平滑类攻击失效、$\delta_2 N \equiv \delta_1 \pmod{M_p}$ 的自指关系、碰撞式可分离因而能降到两条表。
+docs/
+├── ROADMAP.md               current status, what was built, what is left
+├── benchmarks.md            measured solve-time curves per lock
+├── RELEASE_CHECKLIST.md     steps before publishing a challenge
+├── CHANGELOG.md             V3 change log (from the AI Studio export)
+├── audit/TRI_CASCADE_AUDIT.md   V2.0 report audit + V2.1 design and measurements (was README.md, Chinese)
+├── arsenal/
+│   ├── README_V3.md         V3 overview (from the export)
+│   ├── TRAPDOOR_ARSENAL_V3.md   V3 spec (Chinese); served by the dashboard at /api/report
+│   └── trapdoors.md         V3 formal six-module framework per lock
+└── archive/aistudio_implementation_plan.md
 
-**一个必须讲明白的判断**：对顶级 AI 而言，**计算量根本不是壁垒**。他们会装 Sage、fpylll、用 C 重写，本仓库测出的 400 秒在那边可能是 10 秒。真正的防线只有**推导深度**——需要多少条彼此独立、且不能靠试错撞出来的洞察。现在是 3 层 × 约 3 条，量级不错，但每一条单独拿出来都在文献里有（CM 后门属 Young–Yung / Crépeau–Slakmon 一脉，环面属 XTR，三次 Pell 属 Lucas/Rédei 一脉，共享基属 ACD）。很强的解题者有可能认出来。
+package.json, metadata.json  AI Studio container entry points (dev/start → dashboard)
+```
 
-### 加硬路线（按性价比排序）
+## Quick start
 
-**1. 把 Layer A 换掉或大幅加强。** 保守做法：$\delta_1$ 提到 32 位，同时把基扩成一个族（$a^k + \delta_1$，$a$ 与 $k$ 均未知），搜索空间从 $2^{16}$ 变为约 $2^{40}$，Python 扫不动、C 也要几十分钟。激进做法：直接用 Layer B 的同类构造替换，让入口就是最硬的那层——代价是解题者可能根本进不来，需自行权衡要"难"还是要"有人做得出来"。
-
-**2. Layer B 提到 $K = 2^{18}$。** 单次全扫实测 400.7 秒，期望命中第 14 条扭曲，总计约 1.6–1.8 小时（**此档尚未端到端验证，见第六部分**）。
-
-**3. Layer C 提到 $2^{16}$，并把 $a$ 从卷面拿掉**，让解题者自己找非三次剩余。
-
-**4. 补第四层。** 变种 5 是目前唯一一条**不走群阶、走格**的路径，与另外三层技术栈完全正交——加上它，解题者不可能靠一套工具通吃。需 fpylll/Sage 环境。
-
-### 三层推导深度对应三档工程量
-
-$K = 2^{18}$ 下的一组对比，比原报告"必须手写 Strassen 分治乘积树"那种笼统说法更可验证：
-
-| 解题者做到哪一层 | 单次扫描代价 |
-| :--- | ---: |
-| 朴素两两 gcd（$2^{29}$ 次） | 纯 Python 数天 |
-| 上了乘积树，但停在朴素 $O(d^2)$ 除法 | 34 分钟 |
-| 乘积树 + Kronecker + Newton 除法 | 约 7 分钟 |
-
----
-
-## 第六部分：已知限制与 TODO
-
-### 尚未验证的部分
-
-**变种 9 在 $K = 2^{18}$ 的加硬档未完成端到端验证。** 尝试了三次，每次都在跑到第 1–2 条扭曲时被终止。原因不是内存（机器有 8 GB），也不是进程组分离问题（最后一次已用 `setsid --fork` 确认是 PPID=1 的独立会话）——而是**运行环境会在回合结束后的几分钟内回收后台进程**。之前能跑完的几次（如 $2^{15}$ 的 747 秒），是因为用连续的 `sleep` 把回合一直撑着。
-
-因此第五部分给出的 1.6–1.8 小时仍是基于单次全扫 400.7 秒实测值的**外推**，不是端到端结果。**这一档请在 Claude Code 或本地机器上跑**，那里没有这个限制：
+Run everything from the repo root (modules are invoked with `-m`). Pure Python
+works; `pip install -r requirements-fast.txt` adds gmpy2/fpylll (needed for variant5).
 
 ```bash
-nohup python3 -u variant9.py --bits 18 --seed 20261023 > v9_hard.log 2>&1 &
+# V4 cascade
+python3 -m trapdoor.v4 build --tier ctf                     # -> challenges/v4/{challenge,solution}.json
+python3 -m trapdoor.v4 solve challenges/v4/challenge.json --solution challenges/v4/solution.json
+python3 -m trapdoor.v4 check challenges/v4/challenge.json --solution challenges/v4/solution.json
+
+# Tests
+python3 -m pytest -q tests/test_quick.py
+python3 -u -m tests.edge_suite --seeds 20
+
+# V2.1 tri-cascade (legacy)
+python3 -m trapdoor.tricascade.puzzle_gen --bbits 16 --seed 1023   # → challenges/tri-cascade/
+python3 -m trapdoor.tricascade.puzzle_solve                         # ~400 s, prints the flag
+
+# Single V2.1 variants
+python3 -m trapdoor.variants.variant9 --bits 15 --seed 20261023
+python3 -m trapdoor.variants.variant7 --bits 13 --seed 77
+python3 -m trapdoor.variants.variant6 --seed 606
+python3 -m trapdoor.variants.variant5 --mask 4
+
+# Lock registry
+python3 -u -m trapdoor.arsenal.verify_locks                    # all 14 locks at quick bounds
+python3 -u -m trapdoor.arsenal.verify_locks --lock variant9 --K 13
+python3 -u -m trapdoor.arsenal.benchmark --locks lock02 --K 9,11,13 --out bench.jsonl
+python3 -m trapdoor.arsenal.dashboard        # http://localhost:3000
 ```
 
-在它跑出"分解成功"之前，不建议把 $2^{18}$ 写进正式卷面。
+`npm run dev|verify|test|build` wraps the same commands for the AI Studio runtime.
 
-**变种 5 的 Stage 2 未验证**（纯 Python LLL 维度受限，详见第三部分）。
+## Before publishing a challenge
 
-### TODO
-
-- [ ] 在无后台回收限制的环境跑完 $K = 2^{18}$ 加硬档
-- [ ] 接入 `fpylll`，跑通变种 5 Stage 2（$m{=}5, t{=}10$，20 维）
-- [ ] Layer A 加强到约 $2^{40}$ 搜索空间
-- [ ] Layer C 移除卷面上的 $a$
-- [ ] 把变种 5 接成第四层
-- [ ] 给 `_build_tree` 加 Newton 逆元缓存，进一步降低余数树常数
-
-### 发布前检查
-
-- [ ] **删除 `solution.json`**
-- [ ] 确认 `challenge.json` 中不含任何 $\delta$、$p$、$q$、$M_p$ 的明文
-- [ ] 换生成种子（当前 `--seed 1023` 已在本文档中公开）
-
----
-
-## 复现说明
-
-全部结果在纯 Python 3 下取得，无 `sympy`、`sage`、`fpylll`、`gmpy2`。所有素性测试、模平方根、LLL、Coppersmith 均为本仓库自实现（`ctflib.py`）。
-
-实测环境为 2 核容器。表中标注"实测"的数字均为本机直接测量；标注"外推"的按实测标度指数推算。并发运行多个任务时会争用 CPU，个别数字（如 $K = 23000$ 的 400.7 秒）是在争用状态下测得，独占时约快 15%。
+Follow [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md). In short: build with a fresh
+seed, run `trapdoor.v4 check`, publish `challenge.json` only (not this repo), and keep
+`solution.json` private.
