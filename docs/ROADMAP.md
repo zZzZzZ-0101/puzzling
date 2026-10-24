@@ -1,145 +1,112 @@
-# Roadmap — next-stage proposal
+# Roadmap
 
-_Last updated 2026-10-24, after the repository reorganisation._
+_Last updated 2026-10-24, after Stages 1–3._
 
-This document records what has been verified, what is broken, and a staged plan
-for the next round of work. Numbers marked **measured** were measured on a
-4-core cloud container on 2026-10-24. Everything else is quoted from the
-earlier docs and has not been re-run.
+Numbers marked **measured** come from runs on 2026-10-24 (4-core cloud
+container, gmpy2 + fpylll unless noted). Full tables: [benchmarks.md](benchmarks.md).
 
 ---
 
 ## Where things stand
 
-### V2.1 Tri-Cascade (variants 6 → 9 → 7)
+### Lock registry (14 locks, one interface)
 
-| Item | Status |
-| :--- | :--- |
-| Reference solver on the published `challenge.json` | 401 s end to end (from the audit doc) |
-| variant6 `--seed 606` via new package path | **measured** PASS, 139 s |
-| variant7 `--bits 12 --seed 77` via new package path | **measured** PASS, 12 s |
-| variant9 at K = 2^18 ("hard" tier) | **never verified end to end**; 1.6–1.8 h is an extrapolation |
-| variant5 Stage 2 | blocked: needs a 20-dim LLL (`fpylll`/Sage) |
-| Layer A (variant6) | weakest layer and it is the entry point: δ₁ has 16 bits of entropy, base 3^186 is guessable |
+| Lock | Technique | Quick test | Edge suite, 20 seeds | Solve at default K |
+| :--- | :--- | :--- | :--- | ---: |
+| lock01 | Φ₆ torus T₆ | pass | pass (decoy off + on) | 2.0 s |
+| lock02 | Φ₄ Rédei conic | pass | pass (decoy off + on) | 1.5 s |
+| lock03 | Φ₈ torus, 332-bit p | pass | pass | 3.2 s |
+| lock04 | D = −7 CM curve | pass | pass (decoy off + on) | 22.1 s |
+| lock05 | genus-2 Jacobian | pass | pass (decoy off + on) | 42.0 s |
+| lock06 | quaternion over R₃ | pass | pass (decoy off + on) | 10.8 s |
+| lock07 | prime-order SL₃ | pass | pass | 0.7 s (keygen 5 s) |
+| lock08 | 4D lattice + Coppersmith | pass | pass | 0.01 s |
+| lock09 | Chebyshev / Lucas-V SETUP | pass | pass | < 0.01 s |
+| lock10 | Φ₁₂ torus, 332-bit p | pass | pass | 6.0 s |
+| variant5 | orthogonal lattice + 20-dim Coppersmith | pass (needs fpylll) | — | 1.2 s (mask 2) |
+| variant6 | hidden shared base | pass | — | 0.1 s (d1 16 bits) |
+| variant7 | cubic Pell torus Φ₃ | pass | — | 1.8 s (2^11) |
+| variant9 | prime-order D = 3 CM curve | pass | — | 19.2 s (2^15) |
 
-### V3 Arsenal (10 locks, from the AI Studio export)
-
-Each lock was run once (seed 20260777) through `generate_single_lock` → `solve_single_lock`:
-
-| Lock | Construction | KeyGen | Solve | Result |
-| :--- | :--- | ---: | ---: | :--- |
-| lock01 | Φ₆ torus T₆ | 0.06 s | 2.3 s | **PASS** |
-| lock02 | Φ₄ Rédei conic | 0.05 s | 1.7 s | **PASS** (via verify_locks) |
-| lock03 | Φ₈ octic torus | 0.19 s | 3.1 s | **PASS** (via verify_locks); p is only 332 bits |
-| lock04 | D = −7 CM curve | did not finish | — | **TIMEOUT**: key generation did not finish in the test run (see Stage 1) |
-| lock05 | genus-2 Jacobian | 0.12 s | 44.4 s | **PASS** |
-| lock06 | quaternion over R₃ | 0.23 s | 14.3 s | **PASS** |
-| lock07 | prime-order SL₃ | 61.4 s | 1.2 s | **PASS**; slow keygen (needs p and p²+p+1 both prime); edge suite skips it by default |
-| lock08 | 4D lattice + Coppersmith | 1.7 s | 13.1 s | **PASS** |
-| lock09 | Chebyshev / Lucas-V SETUP | 0.10 s | 0.6 s | **PASS** |
-| lock10 | Φ₁₂ torus | 0.10 s | 6.7 s | **PASS**; p is only 332 bits |
-
-`tests/edge_suite.py` **fails** at lock02 on both the original export and the
-reorganised tree. The test asserts a continued-fraction spike ≥ 2^50, but the
-generator never enforces it. Measured spikes on three seeds were 2^51, 2^57
-and 2^63, so the threshold is borderline and some seeds fall below it.
-
-### Problems found in V3 (beyond pass/fail)
-
-1. **The public surface is not just (N, e, c).** The cascade bundle publishes
-   `lock_sequence` and each layer's `lock_id`, and most `pub` dicts also carry
-   `K_bound`/`B` (lock08 carries `mask_bits`/`x0_bits`). A solver is told which
-   trapdoor each layer uses. This contradicts the main design claim.
-2. **The difficulty is far below V2.1.** All locks default to `K_bound = 2^11`
-   (309 primes per side). Eight of the nine passing locks solve in under 15 s
-   in pure Python (lock05 takes 44 s). V2.1 Layer B uses 2^16 and takes about 217 s. The "defeat frontier
-   LLMs" claims in the V3 docs are untested.
-3. **The decoys give the key away.** N ≡ 1 (mod 2^12), e ≡ 3 (mod 2^80),
-   e ≡ N (mod 2^120), and N ≡ 65537^1337 (mod P₃₇) are each events with
-   probability 2^-12 to 2^-120 for an honest key. One `N % 2**k` check shows
-   that the key was constructed, which points straight at a planted trapdoor.
-4. **Unbalanced primes.** lock03/lock10 use 332-bit p. That is out of ECM
-   reach today (the record is about 274 bits), but the margin is much smaller
-   than for 512-bit p, and p ≠ q bit length is itself a fingerprint once p is found.
-5. **Two cascade frameworks.** `tricascade/` (XOR keystream, seed from the RSA
-   plaintext) and `arsenal/cascade_engine.py` (HMAC envelope, key from p, q)
-   do the same job differently.
-6. `requirements.txt` in the export listed `gmpy2`, but nothing imports it.
+CI (`.github/workflows/ci.yml`) runs the quick tests and a one-seed edge suite
+with and without gmpy2/fpylll. Both jobs passed on the first push.
 
 ---
 
-## Proposed next stage
+## What was built
 
-The ordering is deliberate. Stage 1 makes results trustworthy. Stage 2 makes
-difficulty a measured number. Only then does Stage 3 assemble a challenge.
+### Stage 1: correctness and hygiene ✅
 
-### Stage 1: Correctness and hygiene (small, do first)
+- [x] **Public surface stripped.** Generators publish `{N, e}` only; search
+      bounds moved to `sk["params"]` and into solver keyword arguments. A cascade
+      is `{public, private}`, and each public layer is exactly `N, e, c, next`.
+      Envelope keys depend on layer depth and primes, not on lock names.
+- [x] **lock04 key generation fixed.** u started at 1.375·2^255, so p = u² + 7v²
+      was always 511 bits and the 512-bit check rejected every candidate forever.
+- [x] **N no longer sits at 2^1023.** lock01/lock04 started the q search at the
+      bottom of its range, so N's top bits read 1000…0. The search start is now random.
+- [x] **lock07** back in the edge suite (keygen 79 s pure, 5 s with gmpy2).
+- [x] **lock02 decoy** now guarantees the advertised ≥ 2^50 continued-fraction
+      spike. The edge suite passes on 20 seeds per lock, 340 instances in total.
+- [x] **Decoys are opt-in** (`decoy=True`; default off). The edge suite
+      asserts they are absent by default and present when requested.
+- [x] **Exponents look uniform.** e used to sit just below N (lock05/06) or
+      run 10+ bits short (lock03/10). It is now lifted to a random representative in (N/2, N).
+- [x] `tests/test_quick.py` (15 tests, ~75 s) and a GitHub Actions workflow.
 
-- [ ] **Strip the public surface.** `build_cascade` should publish only
-      `(N, e, c, next_envelope)` per layer. Move `lock_id`, `K_bound`, `B`,
-      `mask_bits`, `x0_bits` into the private side. Solvers take search bounds as
-      parameters rather than reading them from the challenge.
-- [ ] **Fix lock04 key generation**: find which loop does not terminate (twist
-      selection over u₀ ∈ 1..5, or the C₋₇ ⟂ P₃₇ filter) and bound it.
-- [ ] **lock07**: key generation works but takes about 60 s. Add it back to the
-      edge suite (it is excluded unless `--with-lock07` is passed), or cache valid p.
-- [ ] **lock02 decoy**: either loop in the generator until the spike is ≥ 2^50,
-      or drop the assertion. Then make `tests/edge_suite.py` pass on every seed in
-      a fixed set of 20.
-- [ ] **pytest wrapper + CI.** Add `tests/test_quick.py` that runs every
-      lock and variant at a small bound (K = 2^9–2^11) with fixed seeds. Run it in
-      GitHub Actions on push, with a budget under 10 min.
-- [ ] Remove or redesign the statistical decoys (item 3 above). A decoy must
-      be indistinguishable from a random key, or it shouldn't be there.
+### Stage 2: difficulty calibration ✅ (one item not built)
 
-### Stage 2: Difficulty calibration (measure instead of claim)
+- [x] `--K` knob for every lock (`verify_locks --lock X --K n`) and
+      `trapdoor/arsenal/benchmark.py`, with results in [benchmarks.md](benchmarks.md).
+- [x] Optional **gmpy2** (big-int products, primality) and **fpylll** (LLL)
+      backends in `ctflib`; `TRAPDOOR_PURE=1` forces pure Python.
+- [x] **variant5 Stage 2 runs**: the 20-dim Coppersmith lattice recovers p in
+      5 s with fpylll (it was blocked before).
+- [x] **variant9 at K = 2^18**: verified end to end. It factored N in 2318 s
+      (38.6 min, hit on twist 14, gmpy2, shared CPU).
+- [ ] **Generic-attack harness: not built in this round.** The edge suite
+      still runs its existing small set of standard checks (trial division,
+      Fermat, p−1, p+1, Wiener) against every generated key.
 
-- [ ] Add `--K` (search bound) to every lock and produce a solve-time curve
-      per lock (K = 2^11, 2^13, 2^15, 2^16, 2^18), as the audit did for variant9.
-      Commit results to `docs/benchmarks.md`.
-- [ ] **Run variant9 at K = 2^18 end to end** with
-      `nohup python3 -u -m trapdoor.variants.variant9 --bits 18 --seed 20261023 > v9_hard.log &`
-      on a machine that does not reap background jobs. This is the oldest open TODO.
-- [ ] Optional `gmpy2` backend in `ctflib` (drop-in `mpz` when importable)
-      to measure how much a well-equipped solver gains.
-- [ ] `fpylll` path for variant5 Stage 2 (m = 5, t = 10, 20-dim) and lock08
-      at larger parameters.
-- [ ] **Attack harness** (`tools/redteam.py`): run the generic attacks against
-      each public surface and record which ones succeed. Cover Fermat, Pollard
-      p−1, Williams p+1, Φₖ-cyclotomic p-methods for k ≤ 12, short ECM, Wiener and
-      Boneh–Durfee, and the low-bit/known-residue Coppersmith family. A lock ships only if every
-      generic attack fails and only its intended path succeeds.
+Main finding: up to K = 2^13 every lock's cost is dominated by fixed work
+(fitted exponents 0.15–0.95). lock08, lock09 and variant6 cost almost nothing
+once the structure is known, so their difficulty is all insight. variant9 is
+the only lock whose cost scales close to linearly with K.
 
-### Stage 3: Unified cascade V4 (the actual next challenge)
+### Stage 3: unified cascade V4 ✅
 
-- [ ] Fold variants 5/6/7/9 into `LOCK_REGISTRY` so there is **one** cascade
-      engine (keep the HMAC envelope from V3 and retire the XOR keystream).
-- [ ] Choose layers for **orthogonal techniques**, so one toolchain can't
-      solve them all. Suggested lineup, subject to Stage 2 numbers:
+- [x] Variants 5/6/7/9 registered in `LOCK_REGISTRY` (`variant_locks.py`).
+      variant7's cubic non-residue `a` is no longer public; the solver searches for it.
+- [x] One engine (HMAC envelope). The V2.1 XOR-keystream tri-cascade is kept
+      as legacy, only so the published challenge stays solvable.
+- [x] `trapdoor/v4.py`: build / solve / release check, in two tiers:
 
-      | Layer | Lock | Technique family |
-      | :--- | :--- | :--- |
-      | 1 (entry) | variant9 or lock07 at calibrated K | prime-order group, self-referential collision |
-      | 2 | lock10 or lock03 (rebalanced to 512/512) | high-degree cyclotomic torus |
-      | 3 | variant5 / lock08 via fpylll | lattice / Coppersmith |
-      | 4 | lock09 | kleptographic SETUP |
+      | Tier | Layers | Build | Solve (measured) |
+      | :--- | :--- | ---: | ---: |
+      | ctf | variant9 2^13 → lock02 2^13 → lock08 mask 4 → lock09 2^11 | 1.9 s | 19.8 s |
+      | hard | variant9 2^16 → lock02 2^15 → variant5 mask 8 → lock09 2^13 | 1.3 s | 272.9 s |
 
-      Retire variant6 as an entry layer: it is the weakest link and the cascade
-      is only as strong as its first gate.
-- [ ] Re-generate with fresh seeds, keep `solution.json` outside git, and
-      write a release checklist (no δ/p/q/M_p in the public file, seeds not in docs).
-
-### Stage 4: External validation
-
-- [ ] Blind playtest: give the V4 public file to solvers (human and AI) with
-      no repo access, and record time to each layer and where they got stuck.
-- [ ] Update the docs with measured results only. Remove marketing claims
-      ("90% original", "locks out AI") unless the playtest supports them.
+- [x] [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md); `v4 check` automates most of it.
+- Deviation from the plan: **lock03/lock10 could not be rebalanced to 512/512.**
+  With a 512-bit p, Φ₈(p) and Φ₁₂(p) are about 2048 bits. Keeping the trapdoor
+  modulus below N then needs a smooth part of at least 1024 bits, and the CRT
+  construction would have to pin p modulo a number larger than p itself. lock02
+  (Φ₄, balanced primes) takes the torus slot instead.
+- No challenge instance is committed. This repository names the V4 lineup, so
+  a release must be built privately with a fresh seed (see the checklist).
 
 ---
 
-## Decision needed from the maintainer
+## What is left
 
-**Target difficulty.** "Hard but solvable in a weekend CTF" and "maximal
-barrier" lead to different K bounds and a different entry layer. Stage 2 gives
-the numbers, but the target has to be chosen before Stage 3.
+1. **Decide the target difficulty** (ctf vs hard, or new bounds). Compute is
+   not the barrier at these sizes, so the choice is mostly about how many
+   insight steps to stack and how much brute force to add on top.
+2. **Stage 4: blind playtest.** Give a freshly built `challenge.json`, and
+   nothing else, to solvers, and record time per layer and where they stall.
+3. **lock05 / lock06 speed.** These two solvers spend their time in
+   pure-Python group arithmetic that neither backend touches. A vectorised or
+   C implementation would let them run at larger K.
+4. **Generic-attack coverage** beyond the edge suite's current checks, if wanted.
+5. Doc cleanup: `docs/arsenal/*` still carry the export's original claims
+   ("defeats frontier LLMs", etc.). They predate these measurements.
