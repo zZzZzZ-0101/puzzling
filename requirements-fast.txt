@@ -1,0 +1,4 @@
+# Optional accelerators; everything also runs without them (set TRAPDOOR_PURE=1 to force that).
+gmpy2>=2.1
+fpylll>=0.6     # required for variant5 (20-dim Coppersmith lattice)
+cysignals       # runtime dependency of fpylll wheels

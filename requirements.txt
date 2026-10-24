@@ -1,4 +1,3 @@
 # Runtime: pure Python 3.10+, standard library only.
-# Optional accelerators (not yet wired in; see docs/ROADMAP.md, Stage 1):
-#   gmpy2    - faster big-int arithmetic
-#   fpylll   - needed for variant5 Stage 2 (20-dim lattice)
+# Optional accelerators live in requirements-fast.txt (gmpy2, fpylll).
+# Tests: pytest.
